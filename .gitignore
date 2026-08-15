@@ -1,0 +1,15 @@
+# Dependencies and build output
+node_modules/
+dist/
+
+# Local environment configuration
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Legacy Firebase configuration (migrated to environment variables)
+firebase-applet-config.json
+
+# Operating system files
+.DS_Store
