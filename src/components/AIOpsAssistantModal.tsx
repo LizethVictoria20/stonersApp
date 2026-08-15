@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Sparkles, Send, Bot, BookOpen, CheckSquare, Loader2, DollarSign, Target, Repeat, TrendingUp, ShoppingBag } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { apiUrl } from '../lib/api';
 import { formatCOP } from '../utils/formatters';
 
 interface AIOpsAssistantModalProps {
@@ -78,7 +79,7 @@ export const AIOpsAssistantModal: React.FC<AIOpsAssistantModalProps> = ({ isOpen
     setAiResponse(null);
 
     try {
-      const res = await fetch('/api/ai-assistant', {
+      const res = await fetch(apiUrl('/api/ai-assistant'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -265,4 +266,3 @@ export const AIOpsAssistantModal: React.FC<AIOpsAssistantModalProps> = ({ isOpen
     </div>
   );
 };
-

@@ -9,6 +9,7 @@ import {
   GmailMessageSummary 
 } from '../lib/googleAuth';
 import { User as FirebaseUser } from 'firebase/auth';
+import { apiUrl } from '../lib/api';
 
 interface AppContextType {
   currentUser: User;
@@ -380,7 +381,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     let eventSource: EventSource | null = null;
     try {
-      eventSource = new EventSource('/api/sync');
+      eventSource = new EventSource(apiUrl('/api/sync'));
       eventSource.onopen = () => setIsSyncing(true);
       eventSource.onmessage = (event) => {
         try {
@@ -454,7 +455,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     logActivity('Creación de Tarea', `Creó la tarea ${newTask.code}: ${newTask.title}`, newTask.department);
 
     // Call server API asynchronously
-    fetch('/api/tasks', {
+    fetch(apiUrl('/api/tasks'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newTask)
@@ -484,7 +485,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return t;
     }));
 
-    fetch(`/api/tasks/${taskId}`, {
+    fetch(apiUrl(`/api/tasks/${taskId}`), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates)
@@ -498,7 +499,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     setTasks(prev => prev.filter(t => t.id !== taskId));
 
-    fetch(`/api/tasks/${taskId}`, {
+    fetch(apiUrl(`/api/tasks/${taskId}`), {
       method: 'DELETE'
     }).catch(e => console.warn('Server sync error', e));
   };

@@ -23,16 +23,26 @@ import { Task, SOPProcedure } from './types';
 
 function MainAppContent() {
   const { activeTab, currentUser, users } = useApp();
-  const [pathname, setPathname] = useState(window.location.pathname);
+  const basePath = import.meta.env.BASE_URL.replace(/\/$/, '');
+  const getCurrentRoute = () => {
+    const browserPath = window.location.pathname;
+    if (basePath && browserPath === basePath) return '/';
+    if (basePath && browserPath.startsWith(`${basePath}/`)) {
+      return browserPath.slice(basePath.length) || '/';
+    }
+    return browserPath;
+  };
+  const [pathname, setPathname] = useState(getCurrentRoute);
 
   useEffect(() => {
-    const handlePopState = () => setPathname(window.location.pathname);
+    const handlePopState = () => setPathname(getCurrentRoute());
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, []);
+  }, [basePath]);
 
   const navigate = (path: string) => {
-    window.history.pushState({}, '', path);
+    const targetPath = `${basePath}${path}` || '/';
+    window.history.pushState({}, '', targetPath);
     setPathname(path);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };

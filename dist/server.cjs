@@ -78,7 +78,21 @@ function getGenAI() {
 }
 async function startServer() {
   const app = (0, import_express.default)();
-  const PORT = 3e3;
+  const PORT = Number(process.env.PORT) || 3e3;
+  const allowedOrigins = (process.env.CORS_ORIGIN || "http://localhost:3000,http://localhost:5173").split(",").map((origin) => origin.trim()).filter(Boolean);
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && allowedOrigins.includes(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+      res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
+    }
+    if (req.method === "OPTIONS") {
+      return res.sendStatus(204);
+    }
+    next();
+  });
   app.use(import_express.default.json({ limit: "10mb" }));
   app.get("/api/health", (req, res) => {
     res.json({
@@ -97,8 +111,12 @@ async function startServer() {
     res.write(`data: ${JSON.stringify({ type: "INIT_CONNECTED", message: "Sincronizaci\xF3n en tiempo real activa" })}
 
 `);
+    const heartbeat = setInterval(() => {
+      res.write(": keepalive\n\n");
+    }, 25e3);
     sseClients.add(res);
     req.on("close", () => {
+      clearInterval(heartbeat);
       sseClients.delete(res);
     });
   });

@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: stoners-api
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: CORS_ORIGIN
+        value: https://lizethvictoria20.github.io
+      - key: GEMINI_API_KEY
+        sync: false

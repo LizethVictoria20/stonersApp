@@ -53,7 +53,27 @@ function getGenAI(): GoogleGenAI | null {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
+  const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000,http://localhost:5173')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean);
+
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && allowedOrigins.includes(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+    }
+
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(204);
+    }
+
+    next();
+  });
 
   app.use(express.json({ limit: "10mb" }));
 
@@ -78,9 +98,14 @@ async function startServer() {
     // Send initial ping
     res.write(`data: ${JSON.stringify({ type: "INIT_CONNECTED", message: "Sincronización en tiempo real activa" })}\n\n`);
 
+    const heartbeat = setInterval(() => {
+      res.write(': keepalive\n\n');
+    }, 25000);
+
     sseClients.add(res);
 
     req.on("close", () => {
+      clearInterval(heartbeat);
       sseClients.delete(res);
     });
   });
