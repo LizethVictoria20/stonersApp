@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User, Task, SOPProcedure, KPIMetric, Goal, NotificationItem, ActivityLog, Department, SalesBudget, DailySale, Store } from '../types';
-import { INITIAL_USERS, INITIAL_TASKS, INITIAL_SOPS, INITIAL_KPIS, INITIAL_GOALS, INITIAL_NOTIFICATIONS, INITIAL_ACTIVITY_LOGS, INITIAL_SALES_BUDGETS, INITIAL_DAILY_SALES, INITIAL_STORES } from '../data/initialData';
+import { INITIAL_KPIS } from '../data/initialData';
 import { 
   initAuth, 
   googleSignIn, 
@@ -9,12 +9,34 @@ import {
   GmailMessageSummary 
 } from '../lib/googleAuth';
 import { User as FirebaseUser } from 'firebase/auth';
-import { apiUrl } from '../lib/api';
+import { apiRequest, apiUrl, clearApiSessionToken, getApiSessionToken, setApiSessionToken } from '../lib/api';
+
+type PersistedCollection = 'users' | 'tasks' | 'sops' | 'goals' | 'notifications' | 'activity_logs' | 'sales_budgets' | 'daily_sales' | 'stores';
+
+interface BootstrapPayload {
+  currentUser: User | null;
+  users: User[];
+  tasks: Task[];
+  sops: SOPProcedure[];
+  goals: Goal[];
+  notifications: NotificationItem[];
+  activity_logs: ActivityLog[];
+  sales_budgets: SalesBudget[];
+  daily_sales: DailySale[];
+  stores: Store[];
+}
+
+interface AuthResponse {
+  user: User;
+  token: string;
+}
 
 interface AppContextType {
   currentUser: User;
   setCurrentUser: (user: User) => void;
   users: User[];
+  hasRegisteredUsers: boolean;
+  isAuthenticated: boolean;
   addUser: (user: Omit<User, 'id' | 'productivityScore' | 'tasksCompletedThisMonth' | 'lastActive'>) => void;
   tasks: Task[];
   addTask: (task: Omit<Task, 'id' | 'code' | 'createdDate' | 'actualHours' | 'notes'>) => void;
@@ -62,6 +84,7 @@ interface AppContextType {
   googleAccessToken: string | null;
   isGoogleLoading: boolean;
   signInWithGoogle: () => Promise<User | null>;
+  signInWithPin: (email: string, pin: string) => Promise<User>;
   signOutGoogle: () => Promise<void>;
   gmailMessages: GmailMessageSummary[];
   refreshGmailMessages: () => Promise<void>;
@@ -70,7 +93,7 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-const CLEAN_DATA_VERSION = 'verified-data-v1';
+const CLEAN_DATA_VERSION = 'postgresql-source-v2';
 const DATA_STORAGE_KEYS = [
   'stoners_users',
   'stoners_active_user',
@@ -103,33 +126,25 @@ const clearLegacyDemoData = () => {
   localStorage.setItem('stoners_data_version', CLEAN_DATA_VERSION);
 };
 
+const persistRecord = <T extends { id: string }>(collection: PersistedCollection, record: T) => {
+  void apiRequest(`/api/data/${collection}/${encodeURIComponent(record.id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(record),
+  }).catch((error) => console.warn(`No se pudo sincronizar ${collection}:`, error));
+};
+
+const removeRecord = (collection: PersistedCollection, id: string) => {
+  void apiRequest(`/api/data/${collection}/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  }).catch((error) => console.warn(`No se pudo eliminar ${collection}:`, error));
+};
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   clearLegacyDemoData();
 
-  const [users, setUsers] = useState<User[]>(() => {
-    const saved = localStorage.getItem('stoners_users');
-    if (saved) {
-      try {
-        return JSON.parse(saved) as User[];
-      } catch (e) {}
-    }
-    return INITIAL_USERS;
-  });
-
-  const [currentUser, setCurrentUser] = useState<User>(() => {
-    const savedUser = localStorage.getItem('stoners_active_user');
-    if (savedUser) {
-      try {
-        return JSON.parse(savedUser) as User;
-      } catch (e) {}
-    }
-    return BOOTSTRAP_USER;
-  });
-
-  const [tasks, setTasks] = useState<Task[]>(() => {
-    const saved = localStorage.getItem('stoners_tasks');
-    return saved ? JSON.parse(saved) : INITIAL_TASKS;
-  });
+  const [users, setUsers] = useState<User[]>([]);
+  const [currentUser, setCurrentUser] = useState<User>(BOOTSTRAP_USER);
+  const [tasks, setTasks] = useState<Task[]>([]);
 
   // Daily Tasks Auto-Reset Effect for new calendar days
   useEffect(() => {
@@ -147,42 +162,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }));
   }, []);
 
-  const [sops, setSops] = useState<SOPProcedure[]>(() => {
-    const saved = localStorage.getItem('stoners_sops');
-    return saved ? JSON.parse(saved) : INITIAL_SOPS;
-  });
+  const [sops, setSops] = useState<SOPProcedure[]>([]);
 
   const [kpis] = useState<KPIMetric[]>(INITIAL_KPIS);
 
-  const [goals, setGoals] = useState<Goal[]>(() => {
-    const saved = localStorage.getItem('stoners_goals');
-    return saved ? JSON.parse(saved) : INITIAL_GOALS;
-  });
-
-  const [salesBudgets, setSalesBudgets] = useState<SalesBudget[]>(() => {
-    const saved = localStorage.getItem('stoners_sales_budgets');
-    return saved ? JSON.parse(saved) : INITIAL_SALES_BUDGETS;
-  });
-
-  const [dailySales, setDailySales] = useState<DailySale[]>(() => {
-    const saved = localStorage.getItem('stoners_daily_sales');
-    return saved ? JSON.parse(saved) : INITIAL_DAILY_SALES;
-  });
-
-  const [stores, setStores] = useState<Store[]>(() => {
-    const saved = localStorage.getItem('stoners_stores');
-    return saved ? JSON.parse(saved) : INITIAL_STORES;
-  });
-
-  const [notifications, setNotifications] = useState<NotificationItem[]>(() => {
-    const saved = localStorage.getItem('stoners_notifications');
-    return saved ? JSON.parse(saved) : INITIAL_NOTIFICATIONS;
-  });
-
-  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>(() => {
-    const saved = localStorage.getItem('stoners_activities');
-    return saved ? JSON.parse(saved) : INITIAL_ACTIVITY_LOGS;
-  });
+  const [goals, setGoals] = useState<Goal[]>([]);
+  const [salesBudgets, setSalesBudgets] = useState<SalesBudget[]>([]);
+  const [dailySales, setDailySales] = useState<DailySale[]>([]);
+  const [stores, setStores] = useState<Store[]>([]);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
 
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     return (localStorage.getItem('stoners_theme') as 'dark' | 'light') || 'light';
@@ -193,6 +182,56 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [selectedDeptFilter, setSelectedDeptFilter] = useState<Department | 'all'>('all');
   const [isSyncing, setIsSyncing] = useState(true);
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [hasRegisteredUsers, setHasRegisteredUsers] = useState(users.length > 0);
+  const [apiSessionToken, setApiSessionTokenState] = useState(getApiSessionToken);
+
+  useEffect(() => {
+    const expireSession = () => {
+      setApiSessionTokenState('');
+      setCurrentUser(BOOTSTRAP_USER);
+      setUsers([]);
+    };
+    window.addEventListener('stoners-session-expired', expireSession);
+    return () => window.removeEventListener('stoners-session-expired', expireSession);
+  }, []);
+
+  useEffect(() => {
+    apiRequest<{ hasUsers: boolean }>('/api/auth/status')
+      .then(({ hasUsers }) => setHasRegisteredUsers(hasUsers))
+      .catch((error) => console.warn('No se pudo consultar el estado de usuarios:', error));
+  }, []);
+
+  // PostgreSQL es la fuente de verdad; localStorage queda únicamente como caché de interfaz.
+  useEffect(() => {
+    if (!apiSessionToken) {
+      setIsSyncing(false);
+      return;
+    }
+    let cancelled = false;
+    apiRequest<BootstrapPayload>('/api/bootstrap')
+      .then((data) => {
+        if (cancelled) return;
+        if (data.currentUser) setCurrentUser(data.currentUser);
+        setUsers(data.users || []);
+        setTasks(data.tasks || []);
+        setSops(data.sops || []);
+        setGoals(data.goals || []);
+        setNotifications(data.notifications || []);
+        setActivityLogs(data.activity_logs || []);
+        setSalesBudgets(data.sales_budgets || []);
+        setDailySales(data.daily_sales || []);
+        setStores(data.stores || []);
+        setIsSyncing(true);
+      })
+      .catch((error) => {
+        console.warn('No se pudo cargar el estado desde PostgreSQL:', error);
+        setIsSyncing(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [apiSessionToken]);
 
   // Google Auth & Gmail Integration State
   const [googleUser, setGoogleUser] = useState<FirebaseUser | null>(null);
@@ -249,47 +288,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         fetchRecentGmailMessages(result.accessToken, 10).then(setGmailMessages).catch(console.error);
       }
 
-      const email = (result.user.email || '').toLowerCase();
-      const displayName = result.user.displayName || 'Usuario Google';
-      const photoURL = result.user.photoURL || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=250';
-
-      // Check if user already exists
-      let matchedUser = users.find(u => u.email.toLowerCase() === email || u.name.toLowerCase() === displayName.toLowerCase());
-
-      // The first real account bootstraps the clean workspace as administrator.
-      const isAdminEmail = users.length === 0 || email.includes('liz') || email.includes('santiago') || email === 'lizethvictoria755@gmail.com' || displayName.toLowerCase().includes('liz') || displayName.toLowerCase().includes('santiago');
-
-      if (matchedUser) {
-        // Upgrade / Update user details
-        const updated: User = {
-          ...matchedUser,
-          avatar: photoURL || matchedUser.avatar,
-          role: isAdminEmail ? 'admin' : matchedUser.role,
-          department: isAdminEmail ? 'admin' : matchedUser.department
-        };
-        setCurrentUser(updated);
-        setUsers(prev => prev.map(u => u.id === updated.id ? updated : u));
-        matchedUser = updated;
-      } else {
-        // Create new user linked to Google Account
-        const newUser: User = {
-          id: `usr-g-${result.user.uid.slice(0, 8)}`,
-          name: displayName,
-          email: result.user.email || 'usuario@stonerscolombia.com',
-          role: isAdminEmail ? 'admin' : 'vendedor',
-          department: isAdminEmail ? 'admin' : 'sales',
-          avatar: photoURL,
-          productivityScore: 100,
-          tasksCompletedThisMonth: 0,
-          lastActive: 'Ahora mismo',
-          phone: result.user.phoneNumber || '+57 300 000 0000',
-          pinCode: '1234',
-          storeIds: []
-        };
-        setUsers(prev => [newUser, ...prev]);
-        setCurrentUser(newUser);
-        matchedUser = newUser;
-      }
+      const idToken = await result.user.getIdToken();
+      const authResponse = await apiRequest<AuthResponse>('/api/auth/google', {
+        method: 'POST',
+        body: JSON.stringify({ idToken }),
+      });
+      setApiSessionToken(authResponse.token);
+      setApiSessionTokenState(authResponse.token);
+      const matchedUser = authResponse.user;
+      setUsers(prev => [matchedUser, ...prev.filter(user => user.id !== matchedUser.id)]);
+      setCurrentUser(matchedUser);
+      setHasRegisteredUsers(true);
 
       // Add audit log and notification
       const notif: NotificationItem = {
@@ -302,6 +311,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         read: false
       };
       setNotifications(prev => [notif, ...prev]);
+      persistRecord('notifications', notif);
 
       return matchedUser;
     } catch (error: any) {
@@ -312,61 +322,44 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const signInWithPin = async (email: string, pin: string): Promise<User> => {
+    const authResponse = await apiRequest<AuthResponse>('/api/auth/pin', {
+      method: 'POST',
+      body: JSON.stringify({ email, pin }),
+    });
+    setApiSessionToken(authResponse.token);
+    setApiSessionTokenState(authResponse.token);
+    setCurrentUser(authResponse.user);
+    setUsers(prev => [authResponse.user, ...prev.filter(user => user.id !== authResponse.user.id)]);
+    return authResponse.user;
+  };
+
   // Google Sign Out action
   const signOutGoogle = async () => {
     setIsGoogleLoading(true);
     try {
       await googleSignOut();
+      clearApiSessionToken();
+      setApiSessionTokenState('');
       setGoogleUser(null);
       setGoogleAccessToken(null);
       setGmailMessages([]);
+      setCurrentUser(BOOTSTRAP_USER);
+      setUsers([]);
+      setTasks([]);
+      setSops([]);
+      setGoals([]);
+      setNotifications([]);
+      setActivityLogs([]);
+      setSalesBudgets([]);
+      setDailySales([]);
+      setStores([]);
     } catch (err) {
       console.error('Error al cerrar sesión de Google:', err);
     } finally {
       setIsGoogleLoading(false);
     }
   };
-
-  // Sync to localStorage
-  useEffect(() => {
-    localStorage.setItem('stoners_tasks', JSON.stringify(tasks));
-  }, [tasks]);
-
-  useEffect(() => {
-    localStorage.setItem('stoners_users', JSON.stringify(users));
-  }, [users]);
-
-  useEffect(() => {
-    if (currentUser.id === BOOTSTRAP_USER.id) {
-      localStorage.removeItem('stoners_active_user');
-    } else {
-      localStorage.setItem('stoners_active_user', JSON.stringify(currentUser));
-    }
-  }, [currentUser]);
-
-  useEffect(() => {
-    localStorage.setItem('stoners_sops', JSON.stringify(sops));
-  }, [sops]);
-
-  useEffect(() => {
-    localStorage.setItem('stoners_notifications', JSON.stringify(notifications));
-  }, [notifications]);
-
-  useEffect(() => {
-    localStorage.setItem('stoners_goals', JSON.stringify(goals));
-  }, [goals]);
-
-  useEffect(() => {
-    localStorage.setItem('stoners_sales_budgets', JSON.stringify(salesBudgets));
-  }, [salesBudgets]);
-
-  useEffect(() => {
-    localStorage.setItem('stoners_daily_sales', JSON.stringify(dailySales));
-  }, [dailySales]);
-
-  useEffect(() => {
-    localStorage.setItem('stoners_stores', JSON.stringify(stores));
-  }, [stores]);
 
   useEffect(() => {
     localStorage.setItem('stoners_theme', theme);
@@ -381,7 +374,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     let eventSource: EventSource | null = null;
     try {
-      eventSource = new EventSource(apiUrl('/api/sync'));
+      const sessionToken = apiSessionToken;
+      if (!sessionToken) {
+        setIsSyncing(false);
+        return;
+      }
+      eventSource = new EventSource(`${apiUrl('/api/sync')}?token=${encodeURIComponent(sessionToken)}`);
       eventSource.onopen = () => setIsSyncing(true);
       eventSource.onmessage = (event) => {
         try {
@@ -390,8 +388,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setTasks(prev => [data.payload, ...prev.filter(t => t.id !== data.payload.id)]);
           } else if (data.type === 'TASK_UPDATED') {
             setTasks(prev => prev.map(t => t.id === data.payload.id ? data.payload : t));
+          } else if (data.type === 'TASK_DELETED') {
+            setTasks(prev => prev.filter(t => t.id !== data.payload.id));
           } else if (data.type === 'NOTIFICATION_NEW') {
-            setNotifications(prev => [data.payload, ...prev]);
+            setNotifications(prev => [data.payload, ...prev.filter(item => item.id !== data.payload.id)]);
+          } else if (data.type === 'USER_CREATED' || data.type === 'USER_UPDATED') {
+            setUsers(prev => [data.payload, ...prev.filter(item => item.id !== data.payload.id)]);
+          } else if (data.type === 'SOP_CREATED') {
+            setSops(prev => [data.payload, ...prev.filter(item => item.id !== data.payload.id)]);
+          } else if (data.type === 'DATA_UPSERTED') {
+            const { collection, record } = data.payload;
+            const upsert = <T extends { id: string }>(items: T[]) => [record, ...items.filter(item => item.id !== record.id)];
+            if (collection === 'users') setUsers(upsert);
+            if (collection === 'tasks') setTasks(upsert);
+            if (collection === 'sops') setSops(upsert);
+            if (collection === 'goals') setGoals(upsert);
+            if (collection === 'notifications') setNotifications(upsert);
+            if (collection === 'activity_logs') setActivityLogs(upsert);
+            if (collection === 'sales_budgets') setSalesBudgets(upsert);
+            if (collection === 'daily_sales') setDailySales(upsert);
+            if (collection === 'stores') setStores(upsert);
+          } else if (data.type === 'DATA_DELETED') {
+            const { collection, id } = data.payload;
+            if (collection === 'users') setUsers(prev => prev.filter(item => item.id !== id));
+            if (collection === 'tasks') setTasks(prev => prev.filter(item => item.id !== id));
+            if (collection === 'sops') setSops(prev => prev.filter(item => item.id !== id));
+            if (collection === 'goals') setGoals(prev => prev.filter(item => item.id !== id));
+            if (collection === 'notifications') setNotifications(prev => prev.filter(item => item.id !== id));
+            if (collection === 'activity_logs') setActivityLogs(prev => prev.filter(item => item.id !== id));
+            if (collection === 'sales_budgets') setSalesBudgets(prev => prev.filter(item => item.id !== id));
+            if (collection === 'daily_sales') setDailySales(prev => prev.filter(item => item.id !== id));
+            if (collection === 'stores') setStores(prev => prev.filter(item => item.id !== id));
           }
         } catch (e) {
           console.warn('SSE Parse error', e);
@@ -407,7 +434,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => {
       if (eventSource) eventSource.close();
     };
-  }, []);
+  }, [apiSessionToken]);
 
   const toggleTheme = () => {
     setTheme(prev => prev === 'dark' ? 'light' : 'dark');
@@ -424,6 +451,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       department: dept
     };
     setActivityLogs(prev => [newAct, ...prev]);
+    persistRecord('activity_logs', newAct);
   };
 
   const addTask = (newTaskData: Omit<Task, 'id' | 'code' | 'createdDate' | 'actualHours' | 'notes'>) => {
@@ -439,25 +467,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setTasks(prev => [newTask, ...prev]);
 
-    // Send notification
-    const newNotif: NotificationItem = {
-      id: `notif-${Date.now()}`,
-      userId: newTask.assignedToId,
-      title: 'Nueva Tarea Asignada',
-      message: `Se te ha asignado la tarea: ${newTask.title}`,
-      timestamp: 'Ahora mismo',
-      type: 'task_assigned',
-      read: false,
-      linkId: newTask.id
-    };
-    setNotifications(prev => [newNotif, ...prev]);
-
     logActivity('Creación de Tarea', `Creó la tarea ${newTask.code}: ${newTask.title}`, newTask.department);
 
     // Call server API asynchronously
-    fetch(apiUrl('/api/tasks'), {
+    apiRequest<Task>('/api/tasks', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newTask)
     }).catch(e => console.warn('Server sync error', e));
   };
@@ -485,9 +499,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return t;
     }));
 
-    fetch(apiUrl(`/api/tasks/${taskId}`), {
+    apiRequest<Task>(`/api/tasks/${taskId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates)
     }).catch(e => console.warn('Server sync error', e));
   };
@@ -499,7 +512,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     setTasks(prev => prev.filter(t => t.id !== taskId));
 
-    fetch(apiUrl(`/api/tasks/${taskId}`), {
+    apiRequest<{ success: boolean }>(`/api/tasks/${taskId}`, {
       method: 'DELETE'
     }).catch(e => console.warn('Server sync error', e));
   };
@@ -511,12 +524,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const updatedSubtasks = t.subtasks.map(s => s.id === subtaskId ? { ...s, completed: !s.completed } : s);
         const allDone = updatedSubtasks.length > 0 && updatedSubtasks.every(s => s.completed);
 
-        return {
+        const updatedTask: Task = {
           ...t,
           subtasks: updatedSubtasks,
           status: allDone ? 'completed' : (t.status === 'completed' ? 'in_progress' : t.status),
           lastCompletedDate: allDone ? todayStr : (t.lastCompletedDate === todayStr && !allDone ? '' : t.lastCompletedDate)
         };
+        persistRecord('tasks', updatedTask);
+        return updatedTask;
       }
       return t;
     }));
@@ -524,6 +539,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const importTasksFromExcel = (importedTasks: Task[]) => {
     setTasks(prev => [...importedTasks, ...prev]);
+    importedTasks.forEach(task => persistRecord('tasks', task));
     logActivity('Importación Masiva', `Importó ${importedTasks.length} tareas desde Excel/CSV`, currentUser.department);
   };
 
@@ -536,6 +552,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       lastActive: 'Nuevo ingreso'
     };
     setUsers(prev => [...prev, newUser]);
+    void apiRequest<User>('/api/users', {
+      method: 'POST',
+      body: JSON.stringify(newUser),
+    }).catch(error => console.warn('No se pudo sincronizar el usuario:', error));
     logActivity('Usuario Creado', `Registró al colaborador ${newUser.name} como ${newUser.role}`, newUser.department);
   };
 
@@ -549,6 +569,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       acknowledgedBy: []
     };
     setSops(prev => [newSOP, ...prev]);
+    void apiRequest<SOPProcedure>('/api/sops', {
+      method: 'POST',
+      body: JSON.stringify(newSOP),
+    }).catch(error => console.warn('No se pudo sincronizar el SOP:', error));
     logActivity('Nuevo SOP Publicado', `Publicó el manual ${newSOP.code}: ${newSOP.title}`, newSOP.department);
   };
 
@@ -561,7 +585,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...sop.acknowledgedBy,
           { userId: currentUser.id, userName: currentUser.name, timestamp: new Date().toLocaleString('es-CO') }
         ];
-        return { ...sop, acknowledgedBy: updatedAck };
+        const updatedSOP = { ...sop, acknowledgedBy: updatedAck };
+        persistRecord('sops', updatedSOP);
+        return updatedSOP;
       }
       return sop;
     }));
@@ -576,6 +602,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       status: 'active'
     };
     setGoals(prev => [newGoal, ...prev]);
+    persistRecord('goals', newGoal);
   };
 
   const addOrUpdateSalesBudget = (budgetData: Omit<SalesBudget, 'id'>) => {
@@ -589,12 +616,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           notes: budgetData.notes,
           sellerName: budgetData.sellerName
         };
+        persistRecord('sales_budgets', updated[existingIndex]);
         return updated;
       } else {
         const newBudget: SalesBudget = {
           ...budgetData,
           id: `bg-${Date.now()}`
         };
+        persistRecord('sales_budgets', newBudget);
         return [newBudget, ...prev];
       }
     });
@@ -604,6 +633,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteSalesBudget = (id: string) => {
     setSalesBudgets(prev => prev.filter(b => b.id !== id));
+    removeRecord('sales_budgets', id);
     logActivity('Presupuesto Eliminado', `Eliminó registro de presupuesto ID ${id}`, 'admin');
   };
 
@@ -614,16 +644,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       timestamp: new Date().toLocaleString('es-CO')
     };
     setDailySales(prev => [newSale, ...prev]);
+    persistRecord('daily_sales', newSale);
     logActivity('Registro de Venta', `Vendedor ${saleData.sellerName} registró venta de $${saleData.amount.toLocaleString()} por canal ${saleData.channel}`, 'sales');
   };
 
   const updateDailySale = (id: string, updates: Partial<DailySale>) => {
-    setDailySales(prev => prev.map(s => s.id === id ? { ...s, ...updates } : s));
+    setDailySales(prev => prev.map(s => {
+      if (s.id !== id) return s;
+      const updated = { ...s, ...updates };
+      persistRecord('daily_sales', updated);
+      return updated;
+    }));
     logActivity('Venta Actualizada', `Modificó datos de venta ID ${id}`, 'sales');
   };
 
   const deleteDailySale = (id: string) => {
     setDailySales(prev => prev.filter(s => s.id !== id));
+    removeRecord('daily_sales', id);
     logActivity('Venta Eliminada', `Eliminó registro de venta ID ${id}`, 'sales');
   };
 
@@ -633,16 +670,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: `str-${Date.now()}`
     };
     setStores(prev => [...prev, newStore]);
+    persistRecord('stores', newStore);
     logActivity('Sede Creada', `Registró la sede ${newStore.name} (${newStore.city})`, 'admin');
   };
 
   const updateStore = (id: string, updates: Partial<Store>) => {
-    setStores(prev => prev.map(s => s.id === id ? { ...s, ...updates } : s));
+    setStores(prev => prev.map(s => {
+      if (s.id !== id) return s;
+      const updated = { ...s, ...updates };
+      persistRecord('stores', updated);
+      return updated;
+    }));
     logActivity('Sede Actualizada', `Actualizó información de la sede ID ${id}`, 'admin');
   };
 
   const deleteStore = (id: string) => {
     setStores(prev => prev.filter(s => s.id !== id));
+    removeRecord('stores', id);
     logActivity('Sede Eliminada', `Eliminó la sede ID ${id}`, 'admin');
   };
 
@@ -651,32 +695,48 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!targetStore) return;
 
     // Update store assigned sellers
-    setStores(prev => prev.map(s => s.id === storeId ? { ...s, assignedSellerIds: sellerIds } : s));
+    setStores(prev => prev.map(s => {
+      if (s.id !== storeId) return s;
+      const updated = { ...s, assignedSellerIds: sellerIds };
+      persistRecord('stores', updated);
+      return updated;
+    }));
 
     // Also update users storeIds
     setUsers(prev => prev.map(u => {
       const currentStoreIds = u.storeIds || [];
+      let updatedUser = u;
       if (sellerIds.includes(u.id)) {
         if (!currentStoreIds.includes(storeId)) {
-          return { ...u, storeIds: [...currentStoreIds, storeId] };
+          updatedUser = { ...u, storeIds: [...currentStoreIds, storeId] };
         }
       } else {
         if (currentStoreIds.includes(storeId)) {
-          return { ...u, storeIds: currentStoreIds.filter(id => id !== storeId) };
+          updatedUser = { ...u, storeIds: currentStoreIds.filter(id => id !== storeId) };
         }
       }
-      return u;
+      if (updatedUser !== u) persistRecord('users', updatedUser);
+      return updatedUser;
     }));
 
     logActivity('Asignación de Vendedores', `Actualizó vendedores asignados a ${targetStore.name} (${sellerIds.length} vendedores)`, 'admin');
   };
 
   const markAsRead = (notifId: string) => {
-    setNotifications(prev => prev.map(n => n.id === notifId ? { ...n, read: true } : n));
+    setNotifications(prev => prev.map(n => {
+      if (n.id !== notifId) return n;
+      const updated = { ...n, read: true };
+      persistRecord('notifications', updated);
+      return updated;
+    }));
   };
 
   const markAllAsRead = () => {
-    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    setNotifications(prev => prev.map(n => {
+      const updated = { ...n, read: true };
+      persistRecord('notifications', updated);
+      return updated;
+    }));
   };
 
   const unreadNotificationCount = notifications.filter(n => !n.read && n.userId === currentUser.id).length;
@@ -687,6 +747,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         currentUser,
         setCurrentUser,
         users,
+        hasRegisteredUsers,
+        isAuthenticated: Boolean(apiSessionToken && currentUser.id !== BOOTSTRAP_USER.id),
         addUser,
         tasks,
         addTask,
@@ -732,6 +794,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         googleAccessToken,
         isGoogleLoading,
         signInWithGoogle,
+        signInWithPin,
         signOutGoogle,
         gmailMessages,
         refreshGmailMessages,

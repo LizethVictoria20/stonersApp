@@ -23,38 +23,175 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 
 // server.ts
 var import_express = __toESM(require("express"), 1);
+var import_crypto = __toESM(require("crypto"), 1);
 var import_path = __toESM(require("path"), 1);
 var import_vite = require("vite");
 var import_genai = require("@google/genai");
 
-// src/data/initialData.ts
-var INITIAL_USERS = [];
-var INITIAL_SOPS = [];
-var INITIAL_TASKS = [];
-var INITIAL_KPIS = [];
-var INITIAL_GOALS = [];
-var INITIAL_NOTIFICATIONS = [];
-var INITIAL_ACTIVITY_LOGS = [];
+// server/database.ts
+var import_supabase_js = require("@supabase/supabase-js");
+var COLLECTIONS = [
+  "users",
+  "tasks",
+  "sops",
+  "goals",
+  "notifications",
+  "activity_logs",
+  "sales_budgets",
+  "daily_sales",
+  "stores"
+];
+var memoryStore = new Map(
+  COLLECTIONS.map((collection) => [collection, /* @__PURE__ */ new Map()])
+);
+var client;
+function getClient() {
+  if (client !== void 0) return client;
+  const url = process.env.SUPABASE_URL?.trim();
+  const secretKey = (process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY)?.trim();
+  client = url && secretKey ? (0, import_supabase_js.createClient)(url, secretKey, {
+    auth: { persistSession: false, autoRefreshToken: false }
+  }) : null;
+  return client;
+}
+function assertDevelopmentFallback() {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("PostgreSQL no est\xE1 configurado. Define SUPABASE_URL y SUPABASE_SECRET_KEY en Render.");
+  }
+}
+async function checkDatabase() {
+  const supabase = getClient();
+  if (!supabase) return { configured: false, connected: false };
+  const { error } = await supabase.from("app_records").select("entity_id").limit(1);
+  return error ? { configured: true, connected: false, error: error.message } : { configured: true, connected: true };
+}
+async function listRecords(collection) {
+  const supabase = getClient();
+  if (!supabase) {
+    assertDevelopmentFallback();
+    return Array.from(memoryStore.get(collection).values());
+  }
+  const { data, error } = await supabase.from("app_records").select("payload").eq("entity_type", collection).order("created_at", { ascending: false });
+  if (error) throw new Error(`No se pudo leer ${collection}: ${error.message}`);
+  return (data || []).map((record) => record.payload);
+}
+async function upsertRecord(collection, record) {
+  const supabase = getClient();
+  if (!supabase) {
+    assertDevelopmentFallback();
+    memoryStore.get(collection).set(record.id, record);
+    return record;
+  }
+  const { error } = await supabase.from("app_records").upsert(
+    {
+      entity_type: collection,
+      entity_id: record.id,
+      payload: record
+    },
+    { onConflict: "entity_type,entity_id" }
+  );
+  if (error) throw new Error(`No se pudo guardar ${collection}: ${error.message}`);
+  return record;
+}
+async function deleteRecord(collection, id) {
+  const supabase = getClient();
+  if (!supabase) {
+    assertDevelopmentFallback();
+    memoryStore.get(collection).delete(id);
+    return;
+  }
+  const { error } = await supabase.from("app_records").delete().eq("entity_type", collection).eq("entity_id", id);
+  if (error) throw new Error(`No se pudo eliminar ${collection}: ${error.message}`);
+}
+async function findRecord(collection, id) {
+  const records = await listRecords(collection);
+  return records.find((record) => record.id === id) || null;
+}
+async function findRecordByField(collection, field, value) {
+  const records = await listRecords(collection);
+  return records.find((record) => record[field] === value) || null;
+}
 
 // server.ts
-var dbUsers = [...INITIAL_USERS];
-var dbTasks = [...INITIAL_TASKS];
-var dbSOPs = [...INITIAL_SOPS];
-var dbKPIs = [...INITIAL_KPIS];
-var dbGoals = [...INITIAL_GOALS];
-var dbNotifications = [...INITIAL_NOTIFICATIONS];
-var dbActivityLogs = [...INITIAL_ACTIVITY_LOGS];
 var sseClients = /* @__PURE__ */ new Set();
+function getSessionSecret() {
+  const secret = process.env.SESSION_SECRET || (process.env.NODE_ENV !== "production" ? "stoners-local-development-secret" : "");
+  if (!secret) throw new Error("SESSION_SECRET no est\xE1 configurado en Render.");
+  return secret;
+}
+function signSession(user) {
+  const payload = {
+    sub: user.id,
+    email: user.email,
+    exp: Math.floor(Date.now() / 1e3) + 12 * 60 * 60
+  };
+  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = import_crypto.default.createHmac("sha256", getSessionSecret()).update(encoded).digest("base64url");
+  return `${encoded}.${signature}`;
+}
+function verifySession(token) {
+  const [encoded, signature] = token.split(".");
+  if (!encoded || !signature) return null;
+  const expected = import_crypto.default.createHmac("sha256", getSessionSecret()).update(encoded).digest("base64url");
+  const actualBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (actualBuffer.length !== expectedBuffer.length || !import_crypto.default.timingSafeEqual(actualBuffer, expectedBuffer)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+    return payload.exp > Math.floor(Date.now() / 1e3) ? payload : null;
+  } catch {
+    return null;
+  }
+}
+async function verifyFirebaseIdToken(idToken) {
+  const apiKey = process.env.FIREBASE_API_KEY?.trim();
+  if (!apiKey) throw new Error("FIREBASE_API_KEY no est\xE1 configurado en Render.");
+  const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(apiKey)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ idToken })
+  });
+  const body = await response.json();
+  const firebaseUser = body.users?.[0];
+  if (!response.ok || !firebaseUser?.email || firebaseUser.emailVerified === false) {
+    throw new Error("El token de Google/Firebase no es v\xE1lido.");
+  }
+  return {
+    email: String(firebaseUser.email).toLowerCase(),
+    name: firebaseUser.displayName || String(firebaseUser.email).split("@")[0],
+    avatar: firebaseUser.photoUrl || "",
+    uid: firebaseUser.localId
+  };
+}
 function normalizeDepartment(value) {
   return value === "admin" || value === "accounting" || value === "sales" ? value : "sales";
 }
 function normalizeUserRole(value) {
   return value === "admin" || value === "contador" || value === "vendedor" ? value : "vendedor";
 }
+function hashPin(pin) {
+  const salt = import_crypto.default.randomBytes(16).toString("hex");
+  const hash = import_crypto.default.scryptSync(pin, salt, 64).toString("hex");
+  return `${salt}:${hash}`;
+}
+function verifyPin(pin, user) {
+  if (user.pinHash) {
+    const [salt, savedHash] = user.pinHash.split(":");
+    if (!salt || !savedHash) return false;
+    const actual = Buffer.from(import_crypto.default.scryptSync(pin, salt, 64).toString("hex"));
+    const expected = Buffer.from(savedHash);
+    return actual.length === expected.length && import_crypto.default.timingSafeEqual(actual, expected);
+  }
+  return Boolean(user.pinCode && pin === user.pinCode);
+}
+function sanitizeUser(user) {
+  const { pinCode: _pinCode, pinHash: _pinHash, ...safeUser } = user;
+  return safeUser;
+}
 function broadcastSyncEvent(eventType, payload) {
   const data = JSON.stringify({ type: eventType, payload, timestamp: (/* @__PURE__ */ new Date()).toISOString() });
-  sseClients.forEach((client) => {
-    client.write(`data: ${data}
+  sseClients.forEach((client2) => {
+    client2.write(`data: ${data}
 
 `);
   });
@@ -94,15 +231,106 @@ async function startServer() {
     next();
   });
   app.use(import_express.default.json({ limit: "10mb" }));
-  app.get("/api/health", (req, res) => {
-    res.json({
-      status: "ok",
+  const asyncRoute = (handler) => (req, res, next) => {
+    Promise.resolve(handler(req, res, next)).catch(next);
+  };
+  app.get("/api/health", asyncRoute(async (_req, res) => {
+    const database = await checkDatabase();
+    const status = database.connected || !database.configured && process.env.NODE_ENV !== "production" ? "ok" : "degraded";
+    res.status(status === "ok" ? 200 : 503).json({
+      status,
       system: "Stoners Colombia - Control Operativo",
       timestamp: (/* @__PURE__ */ new Date()).toISOString(),
-      activeTasks: dbTasks.length,
-      activeUsers: dbUsers.length
+      database: {
+        provider: database.configured ? "supabase-postgresql" : process.env.NODE_ENV === "production" ? "not-configured" : "memory-development",
+        connected: database.connected,
+        error: database.error
+      }
     });
+  }));
+  app.get("/api/auth/status", asyncRoute(async (_req, res) => {
+    const users = await listRecords("users");
+    res.json({ hasUsers: users.length > 0 });
+  }));
+  app.post("/api/auth/google", asyncRoute(async (req, res) => {
+    const identity = await verifyFirebaseIdToken(String(req.body.idToken || ""));
+    const users = await listRecords("users");
+    const existing = users.find((user2) => user2.email.toLowerCase() === identity.email);
+    const user = existing ? { ...existing, name: identity.name, avatar: identity.avatar || existing.avatar, lastActive: "Ahora mismo" } : {
+      id: `usr-g-${identity.uid.slice(0, 12)}`,
+      name: identity.name,
+      email: identity.email,
+      role: users.length === 0 ? "admin" : "vendedor",
+      department: users.length === 0 ? "admin" : "sales",
+      avatar: identity.avatar,
+      productivityScore: 100,
+      tasksCompletedThisMonth: 0,
+      lastActive: "Ahora mismo",
+      storeIds: []
+    };
+    await upsertRecord("users", user);
+    const safeUser = sanitizeUser(user);
+    broadcastSyncEvent(existing ? "USER_UPDATED" : "USER_CREATED", safeUser);
+    res.json({ user: safeUser, token: signSession(user) });
+  }));
+  app.post("/api/auth/pin", asyncRoute(async (req, res) => {
+    const email = String(req.body.email || "").trim().toLowerCase();
+    const pin = String(req.body.pin || "");
+    const user = await findRecordByField("users", "email", email);
+    if (!user || !verifyPin(pin, user)) {
+      return res.status(401).json({ error: "Correo o PIN incorrecto." });
+    }
+    res.json({ user: sanitizeUser(user), token: signSession(user) });
+  }));
+  app.use("/api", (req, res, next) => {
+    const headerToken = req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.slice(7) : "";
+    const queryToken = typeof req.query.token === "string" ? req.query.token : "";
+    const session = verifySession(headerToken || queryToken);
+    if (!session) return res.status(401).json({ error: "Sesi\xF3n inv\xE1lida o vencida." });
+    res.locals.session = session;
+    next();
   });
+  app.get("/api/bootstrap", asyncRoute(async (_req, res) => {
+    const entries = await Promise.all(
+      COLLECTIONS.map(async (collection) => {
+        const records = await listRecords(collection);
+        return [collection, collection === "users" ? records.map(sanitizeUser) : records];
+      })
+    );
+    const state = Object.fromEntries(entries);
+    const session = res.locals.session;
+    const currentUser = await findRecord("users", session.sub);
+    res.json({ ...state, currentUser: currentUser ? sanitizeUser(currentUser) : null });
+  }));
+  app.put("/api/data/:collection/:id", asyncRoute(async (req, res) => {
+    const collection = req.params.collection;
+    if (!COLLECTIONS.includes(collection)) {
+      return res.status(404).json({ error: "Colecci\xF3n no encontrada" });
+    }
+    let record = { ...req.body, id: req.params.id };
+    if (collection === "users") {
+      const existing = await findRecord("users", req.params.id);
+      record = {
+        ...existing,
+        ...record,
+        ...req.body.pinCode ? { pinHash: hashPin(String(req.body.pinCode)) } : existing?.pinHash ? { pinHash: existing.pinHash } : {}
+      };
+      delete record.pinCode;
+    }
+    await upsertRecord(collection, record);
+    const responseRecord = collection === "users" ? sanitizeUser(record) : record;
+    broadcastSyncEvent("DATA_UPSERTED", { collection, record: responseRecord });
+    res.json(responseRecord);
+  }));
+  app.delete("/api/data/:collection/:id", asyncRoute(async (req, res) => {
+    const collection = req.params.collection;
+    if (!COLLECTIONS.includes(collection)) {
+      return res.status(404).json({ error: "Colecci\xF3n no encontrada" });
+    }
+    await deleteRecord(collection, req.params.id);
+    broadcastSyncEvent("DATA_DELETED", { collection, id: req.params.id });
+    res.json({ success: true, id: req.params.id });
+  }));
   app.get("/api/sync", (req, res) => {
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
@@ -120,14 +348,32 @@ async function startServer() {
       sseClients.delete(res);
     });
   });
-  app.get("/api/users", (req, res) => {
-    res.json(dbUsers);
-  });
-  app.post("/api/users", (req, res) => {
+  app.get("/api/users", asyncRoute(async (_req, res) => {
+    res.json((await listRecords("users")).map(sanitizeUser));
+  }));
+  app.post("/api/users", asyncRoute(async (req, res) => {
+    const normalizedEmail = String(req.body.email || "empleado@stonerscolombia.com").toLowerCase();
+    const existing = await findRecordByField("users", "email", normalizedEmail);
+    if (existing) {
+      const updated = {
+        ...existing,
+        ...req.body,
+        id: existing.id,
+        email: normalizedEmail,
+        role: normalizeUserRole(req.body.role ?? existing.role),
+        department: normalizeDepartment(req.body.department ?? existing.department),
+        ...req.body.pinCode ? { pinHash: hashPin(String(req.body.pinCode)) } : {}
+      };
+      delete updated.pinCode;
+      await upsertRecord("users", updated);
+      const safeUser2 = sanitizeUser(updated);
+      broadcastSyncEvent("USER_UPDATED", safeUser2);
+      return res.json(safeUser2);
+    }
     const newUser = {
-      id: `usr-${Date.now()}`,
+      id: req.body.id || `usr-${Date.now()}`,
       name: req.body.name || "Nuevo Empleado",
-      email: req.body.email || "empleado@stonerscolombia.com",
+      email: normalizedEmail,
       role: normalizeUserRole(req.body.role),
       department: normalizeDepartment(req.body.department),
       avatar: req.body.avatar || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=250",
@@ -135,39 +381,46 @@ async function startServer() {
       tasksCompletedThisMonth: 0,
       lastActive: "Ahora mismo",
       phone: req.body.phone || "+57 300 000 0000",
-      pinCode: req.body.pinCode || "1234"
+      pinHash: req.body.pinCode ? hashPin(String(req.body.pinCode)) : void 0,
+      storeIds: req.body.storeIds || []
     };
-    dbUsers.push(newUser);
-    broadcastSyncEvent("USER_CREATED", newUser);
-    res.status(201).json(newUser);
-  });
-  app.get("/api/tasks", (req, res) => {
-    res.json(dbTasks);
-  });
-  app.post("/api/tasks", (req, res) => {
+    await upsertRecord("users", newUser);
+    const safeUser = sanitizeUser(newUser);
+    broadcastSyncEvent("USER_CREATED", safeUser);
+    res.status(201).json(safeUser);
+  }));
+  app.get("/api/tasks", asyncRoute(async (_req, res) => {
+    res.json(await listRecords("tasks"));
+  }));
+  app.post("/api/tasks", asyncRoute(async (req, res) => {
+    const users = await listRecords("users");
     const newTask = {
-      id: `task-${Date.now()}`,
-      code: `TSK-${Math.floor(100 + Math.random() * 900)}`,
+      id: req.body.id || `task-${Date.now()}`,
+      code: req.body.code || `TSK-${Math.floor(100 + Math.random() * 900)}`,
       title: req.body.title || "Nueva Tarea Operativa",
       description: req.body.description || "",
       department: normalizeDepartment(req.body.department),
       priority: req.body.priority || "medium",
       status: req.body.status || "pending",
-      assignedToId: req.body.assignedToId || dbUsers[0]?.id || "",
-      assignedToName: req.body.assignedToName || dbUsers[0]?.name || "Sin asignar",
+      assignedToId: req.body.assignedToId || users[0]?.id || "",
+      assignedToName: req.body.assignedToName || users[0]?.name || "Sin asignar",
       assignedToAvatar: req.body.assignedToAvatar,
       assignedById: req.body.assignedById || "usr-1",
       assignedByName: req.body.assignedByName || "Admin Stoners",
-      createdDate: (/* @__PURE__ */ new Date()).toISOString().split("T")[0],
+      createdDate: req.body.createdDate || (/* @__PURE__ */ new Date()).toISOString().split("T")[0],
       dueDate: req.body.dueDate || (/* @__PURE__ */ new Date()).toISOString().split("T")[0],
       estimatedHours: Number(req.body.estimatedHours) || 2,
-      actualHours: 0,
+      actualHours: Number(req.body.actualHours) || 0,
       subtasks: req.body.subtasks || [],
       sopId: req.body.sopId,
       sopTitle: req.body.sopTitle,
-      notes: []
+      notes: req.body.notes || [],
+      isDaily: Boolean(req.body.isDaily),
+      dailyStartTime: req.body.dailyStartTime,
+      dailyEndTime: req.body.dailyEndTime,
+      lastCompletedDate: req.body.lastCompletedDate
     };
-    dbTasks.unshift(newTask);
+    await upsertRecord("tasks", newTask);
     const notif = {
       id: `notif-${Date.now()}`,
       userId: newTask.assignedToId,
@@ -178,54 +431,55 @@ async function startServer() {
       read: false,
       linkId: newTask.id
     };
-    dbNotifications.unshift(notif);
+    await upsertRecord("notifications", notif);
     broadcastSyncEvent("TASK_CREATED", newTask);
     broadcastSyncEvent("NOTIFICATION_NEW", notif);
     res.status(201).json(newTask);
-  });
-  app.put("/api/tasks/:id", (req, res) => {
+  }));
+  app.put("/api/tasks/:id", asyncRoute(async (req, res) => {
     const taskId = req.params.id;
-    const index = dbTasks.findIndex((t) => t.id === taskId);
-    if (index === -1) {
+    const task = await findRecord("tasks", taskId);
+    if (!task) {
       return res.status(404).json({ error: "Tarea no encontrada" });
     }
-    dbTasks[index] = { ...dbTasks[index], ...req.body };
-    broadcastSyncEvent("TASK_UPDATED", dbTasks[index]);
-    res.json(dbTasks[index]);
-  });
-  app.delete("/api/tasks/:id", (req, res) => {
+    const updated = { ...task, ...req.body, id: task.id };
+    await upsertRecord("tasks", updated);
+    broadcastSyncEvent("TASK_UPDATED", updated);
+    res.json(updated);
+  }));
+  app.delete("/api/tasks/:id", asyncRoute(async (req, res) => {
     const taskId = req.params.id;
-    dbTasks = dbTasks.filter((t) => t.id !== taskId);
+    await deleteRecord("tasks", taskId);
     broadcastSyncEvent("TASK_DELETED", { id: taskId });
     res.json({ success: true, id: taskId });
-  });
-  app.get("/api/sops", (req, res) => {
-    res.json(dbSOPs);
-  });
-  app.post("/api/sops", (req, res) => {
+  }));
+  app.get("/api/sops", asyncRoute(async (_req, res) => {
+    res.json(await listRecords("sops"));
+  }));
+  app.post("/api/sops", asyncRoute(async (req, res) => {
     const newSOP = {
-      id: `sop-${Date.now()}`,
-      code: `SOP-${(req.body.department || "DISP").substring(0, 3).toUpperCase()}-${Math.floor(10 + Math.random() * 90)}`,
+      id: req.body.id || `sop-${Date.now()}`,
+      code: req.body.code || `SOP-${(req.body.department || "DISP").substring(0, 3).toUpperCase()}-${Math.floor(10 + Math.random() * 90)}`,
       title: req.body.title || "Nuevo Protocolo Operativo",
       department: normalizeDepartment(req.body.department),
       minRoleRequired: normalizeUserRole(req.body.minRoleRequired),
-      version: "1.0",
-      lastUpdated: (/* @__PURE__ */ new Date()).toISOString().split("T")[0],
+      version: req.body.version || "1.0",
+      lastUpdated: req.body.lastUpdated || (/* @__PURE__ */ new Date()).toISOString().split("T")[0],
       summary: req.body.summary || "",
       category: req.body.category || "General",
       steps: req.body.steps || [],
-      acknowledgedBy: []
+      acknowledgedBy: req.body.acknowledgedBy || []
     };
-    dbSOPs.unshift(newSOP);
+    await upsertRecord("sops", newSOP);
     broadcastSyncEvent("SOP_CREATED", newSOP);
     res.status(201).json(newSOP);
-  });
-  app.get("/api/kpis", (req, res) => {
+  }));
+  app.get("/api/kpis", asyncRoute(async (_req, res) => {
     res.json({
-      kpis: dbKPIs,
-      goals: dbGoals
+      kpis: [],
+      goals: await listRecords("goals")
     });
-  });
+  }));
   app.post("/api/ai-assistant", async (req, res) => {
     try {
       const { prompt, actionType, contextData } = req.body;
@@ -320,6 +574,11 @@ Instrucciones espec\xEDficas para responder:
       console.error("Gemini API Error:", err);
       res.status(500).json({ error: "Error procesando solicitud de IA", details: err.message });
     }
+  });
+  app.use("/api", (err, _req, res, _next) => {
+    const message = err instanceof Error ? err.message : "Error interno del servidor";
+    console.error("API Error:", err);
+    res.status(500).json({ error: message });
   });
   if (process.env.NODE_ENV !== "production") {
     const vite = await (0, import_vite.createServer)({

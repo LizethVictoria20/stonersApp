@@ -14,11 +14,12 @@ export const TeamList: React.FC = () => {
   const [role, setRole] = useState<UserRole>('vendedor');
   const [department, setDepartment] = useState<Department>('sales');
   const [phone, setPhone] = useState('+57 300 123 4567');
-  const [pinCode, setPinCode] = useState('1234');
+  const [pinCode, setPinCode] = useState('');
 
   const handleAddSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
+    if (!/^\d{4}$/.test(pinCode)) return;
 
     addUser({
       name: name.trim(),
@@ -32,6 +33,7 @@ export const TeamList: React.FC = () => {
 
     setName('');
     setEmail('');
+    setPinCode('');
     setShowAddUserModal(false);
   };
 
@@ -98,7 +100,7 @@ export const TeamList: React.FC = () => {
               </div>
             </div>
 
-            {/* Contact & PIN */}
+            {/* Contact */}
             <div className="space-y-1 text-xs text-slate-700 dark:text-neutral-300 bg-slate-50 dark:bg-neutral-900/60 p-3 rounded-xl border border-slate-200 dark:border-neutral-800">
               <div className="flex items-center gap-2 text-[11px]">
                 <Mail className="h-3.5 w-3.5 text-slate-400 dark:text-neutral-500" />
@@ -109,9 +111,9 @@ export const TeamList: React.FC = () => {
                   <Phone className="h-3.5 w-3.5 text-slate-400 dark:text-neutral-500" />
                   <span>{u.phone || '+57 300 000 0000'}</span>
                 </div>
-                <div className="flex items-center gap-1 text-[10px] font-mono text-emerald-600 dark:text-emerald-400">
+                <div className="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-400">
                   <KeyRound className="h-3 w-3" />
-                  <span>PIN: {u.pinCode || '1234'}</span>
+                  <span>PIN protegido</span>
                 </div>
               </div>
             </div>
@@ -196,10 +198,13 @@ export const TeamList: React.FC = () => {
                 <div>
                   <label className="block font-bold text-slate-700 dark:text-neutral-300 mb-1">PIN Acceso (4 dígitos)</label>
                   <input
-                    type="text"
+                    type="password"
+                    inputMode="numeric"
+                    pattern="\d{4}"
+                    required
                     maxLength={4}
                     value={pinCode}
-                    onChange={(e) => setPinCode(e.target.value)}
+                    onChange={(e) => setPinCode(e.target.value.replace(/\D/g, '').slice(0, 4))}
                     className="w-full rounded-xl border border-slate-200 bg-slate-50 dark:border-neutral-800 dark:bg-neutral-900 px-3 py-2 text-slate-900 dark:text-white focus:border-emerald-500 focus:outline-none font-mono"
                   />
                 </div>

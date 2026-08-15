@@ -22,7 +22,7 @@ import { AIOpsAssistantModal } from './components/AIOpsAssistantModal';
 import { Task, SOPProcedure } from './types';
 
 function MainAppContent() {
-  const { activeTab, currentUser, users } = useApp();
+  const { activeTab, currentUser, isAuthenticated } = useApp();
   const basePath = import.meta.env.BASE_URL.replace(/\/$/, '');
   const getCurrentRoute = () => {
     const browserPath = window.location.pathname;
@@ -67,7 +67,7 @@ function MainAppContent() {
     setIsAIOpen(true);
   };
 
-  if (pathname === '/login' || pathname === '/login/' || users.length === 0) {
+  if (pathname === '/login' || pathname === '/login/' || !isAuthenticated) {
     return <LoginPage onLoginSuccess={() => navigate('/')} />;
   }
 

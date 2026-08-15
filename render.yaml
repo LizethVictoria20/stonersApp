@@ -13,3 +13,11 @@ services:
         value: https://lizethvictoria20.github.io
       - key: GEMINI_API_KEY
         sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: FIREBASE_API_KEY
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true

@@ -1,21 +1,86 @@
 import express from "express";
+import crypto from "crypto";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
-import { INITIAL_USERS, INITIAL_TASKS, INITIAL_SOPS, INITIAL_KPIS, INITIAL_GOALS, INITIAL_NOTIFICATIONS, INITIAL_ACTIVITY_LOGS } from "./src/data/initialData";
-import { Task, SOPProcedure, User, Goal, NotificationItem, ActivityLog, Department, UserRole } from "./src/types";
-
-// In-memory data store for Express server endpoints
-let dbUsers: User[] = [...INITIAL_USERS];
-let dbTasks: Task[] = [...INITIAL_TASKS];
-let dbSOPs: SOPProcedure[] = [...INITIAL_SOPS];
-let dbKPIs = [...INITIAL_KPIS];
-let dbGoals: Goal[] = [...INITIAL_GOALS];
-let dbNotifications: NotificationItem[] = [...INITIAL_NOTIFICATIONS];
-let dbActivityLogs: ActivityLog[] = [...INITIAL_ACTIVITY_LOGS];
+import { Task, SOPProcedure, User, NotificationItem, Department, UserRole } from "./src/types";
+import {
+  checkDatabase,
+  COLLECTIONS,
+  CollectionName,
+  deleteRecord,
+  findRecord,
+  findRecordByField,
+  listRecords,
+  upsertRecord,
+} from "./server/database";
 
 // Connected SSE clients for real-time sync
 const sseClients = new Set<express.Response>();
+
+interface SessionPayload {
+  sub: string;
+  email: string;
+  exp: number;
+}
+
+type StoredUser = User & { pinHash?: string };
+
+function getSessionSecret(): string {
+  const secret = process.env.SESSION_SECRET || (process.env.NODE_ENV !== 'production' ? 'stoners-local-development-secret' : '');
+  if (!secret) throw new Error('SESSION_SECRET no está configurado en Render.');
+  return secret;
+}
+
+function signSession(user: User): string {
+  const payload: SessionPayload = {
+    sub: user.id,
+    email: user.email,
+    exp: Math.floor(Date.now() / 1000) + (12 * 60 * 60),
+  };
+  const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = crypto.createHmac('sha256', getSessionSecret()).update(encoded).digest('base64url');
+  return `${encoded}.${signature}`;
+}
+
+function verifySession(token: string): SessionPayload | null {
+  const [encoded, signature] = token.split('.');
+  if (!encoded || !signature) return null;
+  const expected = crypto.createHmac('sha256', getSessionSecret()).update(encoded).digest('base64url');
+  const actualBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (actualBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(actualBuffer, expectedBuffer)) return null;
+
+  try {
+    const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as SessionPayload;
+    return payload.exp > Math.floor(Date.now() / 1000) ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+async function verifyFirebaseIdToken(idToken: string): Promise<{ email: string; name: string; avatar: string; uid: string }> {
+  const apiKey = process.env.FIREBASE_API_KEY?.trim();
+  if (!apiKey) throw new Error('FIREBASE_API_KEY no está configurado en Render.');
+
+  const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(apiKey)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ idToken }),
+  });
+  const body = await response.json() as any;
+  const firebaseUser = body.users?.[0];
+  if (!response.ok || !firebaseUser?.email || firebaseUser.emailVerified === false) {
+    throw new Error('El token de Google/Firebase no es válido.');
+  }
+
+  return {
+    email: String(firebaseUser.email).toLowerCase(),
+    name: firebaseUser.displayName || String(firebaseUser.email).split('@')[0],
+    avatar: firebaseUser.photoUrl || '',
+    uid: firebaseUser.localId,
+  };
+}
 
 function normalizeDepartment(value: unknown): Department {
   return value === "admin" || value === "accounting" || value === "sales" ? value : "sales";
@@ -23,6 +88,28 @@ function normalizeDepartment(value: unknown): Department {
 
 function normalizeUserRole(value: unknown): UserRole {
   return value === "admin" || value === "contador" || value === "vendedor" ? value : "vendedor";
+}
+
+function hashPin(pin: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(pin, salt, 64).toString('hex');
+  return `${salt}:${hash}`;
+}
+
+function verifyPin(pin: string, user: StoredUser): boolean {
+  if (user.pinHash) {
+    const [salt, savedHash] = user.pinHash.split(':');
+    if (!salt || !savedHash) return false;
+    const actual = Buffer.from(crypto.scryptSync(pin, salt, 64).toString('hex'));
+    const expected = Buffer.from(savedHash);
+    return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+  }
+  return Boolean(user.pinCode && pin === user.pinCode);
+}
+
+function sanitizeUser(user: StoredUser): User {
+  const { pinCode: _pinCode, pinHash: _pinHash, ...safeUser } = user;
+  return safeUser;
 }
 
 function broadcastSyncEvent(eventType: string, payload: any) {
@@ -77,16 +164,126 @@ async function startServer() {
 
   app.use(express.json({ limit: "10mb" }));
 
+  const asyncRoute = (handler: express.RequestHandler): express.RequestHandler => (req, res, next) => {
+    Promise.resolve(handler(req, res, next)).catch(next);
+  };
+
   // 1. API Health Check
-  app.get("/api/health", (req, res) => {
-    res.json({
-      status: "ok",
+  app.get("/api/health", asyncRoute(async (_req, res) => {
+    const database = await checkDatabase();
+    const status = database.connected || (!database.configured && process.env.NODE_ENV !== 'production')
+      ? 'ok'
+      : 'degraded';
+
+    res.status(status === 'ok' ? 200 : 503).json({
+      status,
       system: "Stoners Colombia - Control Operativo",
       timestamp: new Date().toISOString(),
-      activeTasks: dbTasks.length,
-      activeUsers: dbUsers.length
+      database: {
+        provider: database.configured
+          ? 'supabase-postgresql'
+          : process.env.NODE_ENV === 'production' ? 'not-configured' : 'memory-development',
+        connected: database.connected,
+        error: database.error,
+      },
     });
+  }));
+
+  app.get('/api/auth/status', asyncRoute(async (_req, res) => {
+    const users = await listRecords<StoredUser>('users');
+    res.json({ hasUsers: users.length > 0 });
+  }));
+
+  app.post('/api/auth/google', asyncRoute(async (req, res) => {
+    const identity = await verifyFirebaseIdToken(String(req.body.idToken || ''));
+    const users = await listRecords<User>('users');
+    const existing = users.find((user) => user.email.toLowerCase() === identity.email);
+    const user: User = existing
+      ? { ...existing, name: identity.name, avatar: identity.avatar || existing.avatar, lastActive: 'Ahora mismo' }
+      : {
+          id: `usr-g-${identity.uid.slice(0, 12)}`,
+          name: identity.name,
+          email: identity.email,
+          role: users.length === 0 ? 'admin' : 'vendedor',
+          department: users.length === 0 ? 'admin' : 'sales',
+          avatar: identity.avatar,
+          productivityScore: 100,
+          tasksCompletedThisMonth: 0,
+          lastActive: 'Ahora mismo',
+          storeIds: [],
+    };
+
+    await upsertRecord('users', user);
+    const safeUser = sanitizeUser(user);
+    broadcastSyncEvent(existing ? 'USER_UPDATED' : 'USER_CREATED', safeUser);
+    res.json({ user: safeUser, token: signSession(user) });
+  }));
+
+  app.post('/api/auth/pin', asyncRoute(async (req, res) => {
+    const email = String(req.body.email || '').trim().toLowerCase();
+    const pin = String(req.body.pin || '');
+    const user = await findRecordByField<StoredUser>('users', 'email', email);
+    if (!user || !verifyPin(pin, user)) {
+      return res.status(401).json({ error: 'Correo o PIN incorrecto.' });
+    }
+    res.json({ user: sanitizeUser(user), token: signSession(user) });
+  }));
+
+  app.use('/api', (req, res, next) => {
+    const headerToken = req.headers.authorization?.startsWith('Bearer ')
+      ? req.headers.authorization.slice(7)
+      : '';
+    const queryToken = typeof req.query.token === 'string' ? req.query.token : '';
+    const session = verifySession(headerToken || queryToken);
+    if (!session) return res.status(401).json({ error: 'Sesión inválida o vencida.' });
+    res.locals.session = session;
+    next();
   });
+
+  app.get("/api/bootstrap", asyncRoute(async (_req, res) => {
+    const entries = await Promise.all(
+      COLLECTIONS.map(async (collection) => {
+        const records = await listRecords(collection);
+        return [collection, collection === 'users' ? (records as User[]).map(sanitizeUser) : records] as const;
+      }),
+    );
+    const state = Object.fromEntries(entries);
+    const session = res.locals.session as SessionPayload;
+    const currentUser = await findRecord<User>('users', session.sub);
+    res.json({ ...state, currentUser: currentUser ? sanitizeUser(currentUser) : null });
+  }));
+
+  // Persistencia común para módulos que no necesitan lógica adicional.
+  app.put("/api/data/:collection/:id", asyncRoute(async (req, res) => {
+    const collection = req.params.collection as CollectionName;
+    if (!COLLECTIONS.includes(collection)) {
+      return res.status(404).json({ error: 'Colección no encontrada' });
+    }
+    let record = { ...req.body, id: req.params.id };
+    if (collection === 'users') {
+      const existing = await findRecord<StoredUser>('users', req.params.id);
+      record = {
+        ...existing,
+        ...record,
+        ...(req.body.pinCode ? { pinHash: hashPin(String(req.body.pinCode)) } : existing?.pinHash ? { pinHash: existing.pinHash } : {}),
+      };
+      delete record.pinCode;
+    }
+    await upsertRecord(collection, record);
+    const responseRecord = collection === 'users' ? sanitizeUser(record as User) : record;
+    broadcastSyncEvent('DATA_UPSERTED', { collection, record: responseRecord });
+    res.json(responseRecord);
+  }));
+
+  app.delete("/api/data/:collection/:id", asyncRoute(async (req, res) => {
+    const collection = req.params.collection as CollectionName;
+    if (!COLLECTIONS.includes(collection)) {
+      return res.status(404).json({ error: 'Colección no encontrada' });
+    }
+    await deleteRecord(collection, req.params.id);
+    broadcastSyncEvent('DATA_DELETED', { collection, id: req.params.id });
+    res.json({ success: true, id: req.params.id });
+  }));
 
   // 2. Real-time Synchronization SSE Stream
   app.get("/api/sync", (req, res) => {
@@ -111,15 +308,34 @@ async function startServer() {
   });
 
   // 3. User Endpoints
-  app.get("/api/users", (req, res) => {
-    res.json(dbUsers);
-  });
+  app.get("/api/users", asyncRoute(async (_req, res) => {
+    res.json((await listRecords<User>('users')).map(sanitizeUser));
+  }));
 
-  app.post("/api/users", (req, res) => {
-    const newUser: User = {
-      id: `usr-${Date.now()}`,
+  app.post("/api/users", asyncRoute(async (req, res) => {
+    const normalizedEmail = String(req.body.email || 'empleado@stonerscolombia.com').toLowerCase();
+    const existing = await findRecordByField<StoredUser>('users', 'email', normalizedEmail);
+    if (existing) {
+      const updated: StoredUser = {
+        ...existing,
+        ...req.body,
+        id: existing.id,
+        email: normalizedEmail,
+        role: normalizeUserRole(req.body.role ?? existing.role),
+        department: normalizeDepartment(req.body.department ?? existing.department),
+        ...(req.body.pinCode ? { pinHash: hashPin(String(req.body.pinCode)) } : {}),
+      };
+      delete updated.pinCode;
+      await upsertRecord('users', updated);
+      const safeUser = sanitizeUser(updated);
+      broadcastSyncEvent("USER_UPDATED", safeUser);
+      return res.json(safeUser);
+    }
+
+    const newUser: StoredUser = {
+      id: req.body.id || `usr-${Date.now()}`,
       name: req.body.name || "Nuevo Empleado",
-      email: req.body.email || "empleado@stonerscolombia.com",
+      email: normalizedEmail,
       role: normalizeUserRole(req.body.role),
       department: normalizeDepartment(req.body.department),
       avatar: req.body.avatar || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=250",
@@ -127,44 +343,51 @@ async function startServer() {
       tasksCompletedThisMonth: 0,
       lastActive: "Ahora mismo",
       phone: req.body.phone || "+57 300 000 0000",
-      pinCode: req.body.pinCode || "1234"
+      pinHash: req.body.pinCode ? hashPin(String(req.body.pinCode)) : undefined,
+      storeIds: req.body.storeIds || [],
     };
 
-    dbUsers.push(newUser);
-    broadcastSyncEvent("USER_CREATED", newUser);
-    res.status(201).json(newUser);
-  });
+    await upsertRecord('users', newUser);
+    const safeUser = sanitizeUser(newUser);
+    broadcastSyncEvent("USER_CREATED", safeUser);
+    res.status(201).json(safeUser);
+  }));
 
   // 4. Task Endpoints
-  app.get("/api/tasks", (req, res) => {
-    res.json(dbTasks);
-  });
+  app.get("/api/tasks", asyncRoute(async (_req, res) => {
+    res.json(await listRecords<Task>('tasks'));
+  }));
 
-  app.post("/api/tasks", (req, res) => {
+  app.post("/api/tasks", asyncRoute(async (req, res) => {
+    const users = await listRecords<User>('users');
     const newTask: Task = {
-      id: `task-${Date.now()}`,
-      code: `TSK-${Math.floor(100 + Math.random() * 900)}`,
+      id: req.body.id || `task-${Date.now()}`,
+      code: req.body.code || `TSK-${Math.floor(100 + Math.random() * 900)}`,
       title: req.body.title || "Nueva Tarea Operativa",
       description: req.body.description || "",
       department: normalizeDepartment(req.body.department),
       priority: req.body.priority || "medium",
       status: req.body.status || "pending",
-      assignedToId: req.body.assignedToId || dbUsers[0]?.id || '',
-      assignedToName: req.body.assignedToName || dbUsers[0]?.name || 'Sin asignar',
+      assignedToId: req.body.assignedToId || users[0]?.id || '',
+      assignedToName: req.body.assignedToName || users[0]?.name || 'Sin asignar',
       assignedToAvatar: req.body.assignedToAvatar,
       assignedById: req.body.assignedById || "usr-1",
       assignedByName: req.body.assignedByName || "Admin Stoners",
-      createdDate: new Date().toISOString().split("T")[0],
+      createdDate: req.body.createdDate || new Date().toISOString().split("T")[0],
       dueDate: req.body.dueDate || new Date().toISOString().split("T")[0],
       estimatedHours: Number(req.body.estimatedHours) || 2,
-      actualHours: 0,
+      actualHours: Number(req.body.actualHours) || 0,
       subtasks: req.body.subtasks || [],
       sopId: req.body.sopId,
       sopTitle: req.body.sopTitle,
-      notes: []
+      notes: req.body.notes || [],
+      isDaily: Boolean(req.body.isDaily),
+      dailyStartTime: req.body.dailyStartTime,
+      dailyEndTime: req.body.dailyEndTime,
+      lastCompletedDate: req.body.lastCompletedDate,
     };
 
-    dbTasks.unshift(newTask);
+    await upsertRecord('tasks', newTask);
 
     // Create Notification for assigned user
     const notif: NotificationItem = {
@@ -177,66 +400,67 @@ async function startServer() {
       read: false,
       linkId: newTask.id
     };
-    dbNotifications.unshift(notif);
+    await upsertRecord('notifications', notif);
 
     broadcastSyncEvent("TASK_CREATED", newTask);
     broadcastSyncEvent("NOTIFICATION_NEW", notif);
 
     res.status(201).json(newTask);
-  });
+  }));
 
-  app.put("/api/tasks/:id", (req, res) => {
+  app.put("/api/tasks/:id", asyncRoute(async (req, res) => {
     const taskId = req.params.id;
-    const index = dbTasks.findIndex((t) => t.id === taskId);
-    if (index === -1) {
+    const task = await findRecord<Task>('tasks', taskId);
+    if (!task) {
       return res.status(404).json({ error: "Tarea no encontrada" });
     }
 
-    dbTasks[index] = { ...dbTasks[index], ...req.body };
-    broadcastSyncEvent("TASK_UPDATED", dbTasks[index]);
+    const updated = { ...task, ...req.body, id: task.id };
+    await upsertRecord('tasks', updated);
+    broadcastSyncEvent("TASK_UPDATED", updated);
 
-    res.json(dbTasks[index]);
-  });
+    res.json(updated);
+  }));
 
-  app.delete("/api/tasks/:id", (req, res) => {
+  app.delete("/api/tasks/:id", asyncRoute(async (req, res) => {
     const taskId = req.params.id;
-    dbTasks = dbTasks.filter((t) => t.id !== taskId);
+    await deleteRecord('tasks', taskId);
     broadcastSyncEvent("TASK_DELETED", { id: taskId });
     res.json({ success: true, id: taskId });
-  });
+  }));
 
   // 5. SOP Procedures Endpoints
-  app.get("/api/sops", (req, res) => {
-    res.json(dbSOPs);
-  });
+  app.get("/api/sops", asyncRoute(async (_req, res) => {
+    res.json(await listRecords<SOPProcedure>('sops'));
+  }));
 
-  app.post("/api/sops", (req, res) => {
+  app.post("/api/sops", asyncRoute(async (req, res) => {
     const newSOP: SOPProcedure = {
-      id: `sop-${Date.now()}`,
-      code: `SOP-${(req.body.department || "DISP").substring(0, 3).toUpperCase()}-${Math.floor(10 + Math.random() * 90)}`,
+      id: req.body.id || `sop-${Date.now()}`,
+      code: req.body.code || `SOP-${(req.body.department || "DISP").substring(0, 3).toUpperCase()}-${Math.floor(10 + Math.random() * 90)}`,
       title: req.body.title || "Nuevo Protocolo Operativo",
       department: normalizeDepartment(req.body.department),
       minRoleRequired: normalizeUserRole(req.body.minRoleRequired),
-      version: "1.0",
-      lastUpdated: new Date().toISOString().split("T")[0],
+      version: req.body.version || "1.0",
+      lastUpdated: req.body.lastUpdated || new Date().toISOString().split("T")[0],
       summary: req.body.summary || "",
       category: req.body.category || "General",
       steps: req.body.steps || [],
-      acknowledgedBy: []
+      acknowledgedBy: req.body.acknowledgedBy || [],
     };
 
-    dbSOPs.unshift(newSOP);
+    await upsertRecord('sops', newSOP);
     broadcastSyncEvent("SOP_CREATED", newSOP);
     res.status(201).json(newSOP);
-  });
+  }));
 
   // 6. KPIs & Goals
-  app.get("/api/kpis", (req, res) => {
+  app.get("/api/kpis", asyncRoute(async (_req, res) => {
     res.json({
-      kpis: dbKPIs,
-      goals: dbGoals
+      kpis: [],
+      goals: await listRecords('goals'),
     });
-  });
+  }));
 
   // 7. Gemini AI Assistant Endpoint
   app.post("/api/ai-assistant", async (req, res) => {
@@ -338,6 +562,12 @@ Instrucciones específicas para responder:
       console.error("Gemini API Error:", err);
       res.status(500).json({ error: "Error procesando solicitud de IA", details: err.message });
     }
+  });
+
+  app.use('/api', (err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const message = err instanceof Error ? err.message : 'Error interno del servidor';
+    console.error('API Error:', err);
+    res.status(500).json({ error: message });
   });
 
   // Mount Vite Middleware for Development

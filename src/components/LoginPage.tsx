@@ -21,12 +21,12 @@ interface LoginPageProps {
 
 export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
   const {
-    users,
+    hasRegisteredUsers,
     currentUser,
-    setCurrentUser,
     googleUser,
     isGoogleLoading,
     signInWithGoogle,
+    signInWithPin,
   } = useApp();
 
   const [email, setEmail] = useState(currentUser.id === 'bootstrap-user' ? '' : currentUser.email);
@@ -41,31 +41,23 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
     window.setTimeout(onLoginSuccess, 650);
   };
 
-  const handlePinLogin = (event: React.FormEvent) => {
+  const handlePinLogin = async (event: React.FormEvent) => {
     event.preventDefault();
     setError('');
     setSuccess('');
 
     const normalizedEmail = email.trim().toLowerCase();
-    const user = users.find((item) => item.email.toLowerCase() === normalizedEmail);
-
-    if (!user) {
-      setError('No encontramos un usuario registrado con este correo.');
-      return;
-    }
-
     if (!pin.trim()) {
       setError('Ingresa tu PIN para continuar.');
       return;
     }
 
-    if (pin !== user.pinCode && pin !== '1234') {
-      setError('El PIN ingresado no es correcto.');
-      return;
+    try {
+      const user = await signInWithPin(normalizedEmail, pin);
+      finishLogin(`Bienvenido, ${user.name}.`);
+    } catch (loginError) {
+      setError(loginError instanceof Error ? loginError.message : 'No fue posible validar el acceso.');
     }
-
-    setCurrentUser(user);
-    finishLogin(`Bienvenido, ${user.name}.`);
   };
 
   const handleGoogleLogin = async () => {
@@ -142,13 +134,13 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
                 </div>
                 <h2 className="text-2xl font-black tracking-tight">Inicia sesión</h2>
                 <p className="mt-2 text-sm text-slate-400">
-                  {users.length === 0
+                  {!hasRegisteredUsers
                     ? 'Inicia con Google para crear el primer usuario administrador.'
                     : 'Ingresa con tu correo corporativo y PIN personal.'}
                 </p>
               </div>
 
-              {users.length > 0 && <form onSubmit={handlePinLogin} className="space-y-5">
+              {hasRegisteredUsers && <form onSubmit={handlePinLogin} className="space-y-5">
                 <label className="block">
                   <span className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-300">Correo electrónico</span>
                   <div className="relative">
