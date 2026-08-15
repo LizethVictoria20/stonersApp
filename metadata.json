@@ -1,0 +1,6 @@
+{
+  "name": "Stoners Colombia - Control Operativo de Personal",
+  "description": "Sistema integral de gestión de personal, asignación de tareas, manuales SOP, KPIs, dashboards de productividad y notificaciones en tiempo real.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
