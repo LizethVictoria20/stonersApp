@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import crypto from "crypto";
 import path from "path";
@@ -60,8 +61,17 @@ function verifySession(token: string): SessionPayload | null {
 }
 
 async function verifyFirebaseIdToken(idToken: string): Promise<{ email: string; name: string; avatar: string; uid: string }> {
-  const apiKey = process.env.FIREBASE_API_KEY?.trim();
-  if (!apiKey) throw new Error('FIREBASE_API_KEY no está configurado en Render.');
+  const apiKey = (
+    process.env.FIREBASE_API_KEY ||
+    (process.env.NODE_ENV !== 'production' ? process.env.VITE_FIREBASE_API_KEY : '')
+  )?.trim();
+  if (!apiKey) {
+    throw new Error(
+      process.env.NODE_ENV === 'production'
+        ? 'FIREBASE_API_KEY no está configurado en Render.'
+        : 'Falta VITE_FIREBASE_API_KEY o FIREBASE_API_KEY en el archivo .env local.',
+    );
+  }
 
   const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(apiKey)}`, {
     method: 'POST',

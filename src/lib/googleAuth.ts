@@ -1,4 +1,4 @@
-import { initializeApp, getApps, getApp } from 'firebase/app';
+import { initializeApp, getApps } from 'firebase/app';
 import { 
   getAuth, 
   signInWithPopup, 
@@ -21,8 +21,11 @@ const firebaseConfig = {
 export const googleOAuthClientId = import.meta.env.VITE_FIREBASE_OAUTH_CLIENT_ID || '';
 export const recaptchaSiteKey = import.meta.env.VITE_FIREBASE_RECAPTCHA_SITE_KEY || '';
 
-// Initialize Firebase App
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+// Use a dedicated named app so another Firebase integration cannot replace
+// the authentication configuration with an incomplete default app.
+const FIREBASE_APP_NAME = 'stoners-auth';
+const app = getApps().find((candidate) => candidate.name === FIREBASE_APP_NAME)
+  || initializeApp(firebaseConfig, FIREBASE_APP_NAME);
 export const auth = getAuth(app);
 
 // Configure Google Provider with Scopes
