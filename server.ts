@@ -1,7 +1,6 @@
 import "dotenv/config";
 import express from "express";
 import crypto from "crypto";
-import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import { Task, SOPProcedure, User, NotificationItem, Department, UserRole } from "./src/types";
@@ -580,6 +579,10 @@ Instrucciones específicas para responder:
     res.status(500).json({ error: message });
   });
 
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'Ruta de API no encontrada.' });
+  });
+
   // Mount Vite Middleware for Development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -588,10 +591,10 @@ Instrucciones específicas para responder:
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
+    const frontendUrl = process.env.FRONTEND_URL || 'https://lizethvictoria20.github.io/stonersApp/';
     app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+      const relativePath = req.path === '/' ? '' : req.path.replace(/^\//, '');
+      res.redirect(302, new URL(relativePath, frontendUrl).toString());
     });
   }
 
