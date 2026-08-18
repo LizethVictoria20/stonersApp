@@ -230,7 +230,7 @@ export const SalesManager: React.FC<SalesManagerProps> = ({ onOpenAIModal }) => 
             </button>
           )}
 
-          <button
+          {currentUser.role !== 'contador' && <button
             onClick={() => {
               setSaleToEdit(null);
               setIsAddSaleOpen(true);
@@ -239,7 +239,7 @@ export const SalesManager: React.FC<SalesManagerProps> = ({ onOpenAIModal }) => 
           >
             <Plus className="h-4 w-4" />
             <span>Registrar Venta Diaria</span>
-          </button>
+          </button>}
         </div>
       </div>
 
@@ -307,7 +307,7 @@ export const SalesManager: React.FC<SalesManagerProps> = ({ onOpenAIModal }) => 
                 </button>
               )}
 
-              <button
+              {currentUser.role !== 'contador' && <button
                 onClick={() => {
                   setSaleToEdit(null);
                   setIsAddSaleOpen(true);
@@ -316,7 +316,7 @@ export const SalesManager: React.FC<SalesManagerProps> = ({ onOpenAIModal }) => 
               >
                 <Plus className="h-4 w-4" />
                 <span>Registrar Venta (+)</span>
-              </button>
+              </button>}
             </div>
           </div>
         </div>
@@ -751,7 +751,7 @@ export const SalesManager: React.FC<SalesManagerProps> = ({ onOpenAIModal }) => 
             <DollarSign className="h-10 w-10 text-slate-300 dark:text-neutral-600 mx-auto" />
             <h4 className="text-sm font-bold text-slate-700 dark:text-neutral-300">No se encontraron ventas con los filtros aplicados</h4>
             <p className="text-xs text-slate-500 dark:text-neutral-500">Prueba cambiando el mes o seleccionando otro canal de venta.</p>
-            <button
+            {currentUser.role !== 'contador' && <button
               onClick={() => {
                 setSaleToEdit(null);
                 setIsAddSaleOpen(true);
@@ -760,7 +760,7 @@ export const SalesManager: React.FC<SalesManagerProps> = ({ onOpenAIModal }) => 
             >
               <Plus className="h-4 w-4" />
               <span>Registrar Primera Venta</span>
-            </button>
+            </button>}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -816,6 +816,11 @@ export const SalesManager: React.FC<SalesManagerProps> = ({ onOpenAIModal }) => 
 
                     <td className="py-3 px-2 font-extrabold text-emerald-700 dark:text-emerald-400 text-sm whitespace-nowrap">
                       {formatCOP(sale.amount)}
+                      {(currentUser.role === 'admin' || currentUser.role === 'contador') && sale.costTotal !== undefined && (
+                        <span className="mt-0.5 block text-[9px] font-bold text-slate-400">
+                          Costo {formatCOP(sale.costTotal)} · Utilidad {formatCOP(sale.amount - sale.costTotal)}
+                        </span>
+                      )}
                     </td>
 
                     <td className="py-3 px-2 max-w-xs">
@@ -823,7 +828,9 @@ export const SalesManager: React.FC<SalesManagerProps> = ({ onOpenAIModal }) => 
                         <span className="font-bold text-slate-900 dark:text-white block">{sale.clientName}</span>
                       )}
                       <span className="text-slate-500 dark:text-neutral-400 text-[11px] truncate block">
-                        {sale.description || 'Sin detalles'}
+                        {sale.items?.length
+                          ? sale.items.map(item => `${item.quantity}× ${item.productName}`).join(', ')
+                          : sale.description || 'Sin detalles'}
                       </span>
                     </td>
 
@@ -843,7 +850,7 @@ export const SalesManager: React.FC<SalesManagerProps> = ({ onOpenAIModal }) => 
                         )}
                         {(currentUser.role === 'admin' || currentUser.id === sale.sellerId) && (
                           <button
-                            onClick={() => deleteDailySale(sale.id)}
+                            onClick={() => window.confirm('¿Eliminar esta venta y devolver sus productos al inventario?') && deleteDailySale(sale.id)}
                             className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
                             title="Eliminar registro"
                           >

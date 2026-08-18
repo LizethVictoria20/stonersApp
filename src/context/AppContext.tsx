@@ -1,5 +1,9 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { User, Task, SOPProcedure, KPIMetric, Goal, NotificationItem, ActivityLog, Department, SalesBudget, DailySale, Store } from '../types';
+import {
+  User, Task, SOPProcedure, KPIMetric, Goal, NotificationItem, ActivityLog, Department,
+  SalesBudget, DailySale, Store, ProductCategory, Product, ProductVariant, ProductPrice,
+  Supplier, InventoryItem, InventoryMovement, ProductBatch, InventoryMovementType,
+} from '../types';
 import { INITIAL_KPIS } from '../data/initialData';
 import { 
   initAuth, 
@@ -11,7 +15,11 @@ import {
 import { User as FirebaseUser } from 'firebase/auth';
 import { apiRequest, apiUrl, clearApiSessionToken, getApiSessionToken, setApiSessionToken } from '../lib/api';
 
-type PersistedCollection = 'users' | 'tasks' | 'sops' | 'goals' | 'notifications' | 'activity_logs' | 'sales_budgets' | 'daily_sales' | 'stores';
+type PersistedCollection =
+  | 'users' | 'tasks' | 'sops' | 'goals' | 'notifications' | 'activity_logs'
+  | 'sales_budgets' | 'daily_sales' | 'stores' | 'product_categories' | 'products'
+  | 'product_variants' | 'product_prices' | 'suppliers' | 'inventory'
+  | 'inventory_movements' | 'product_batches';
 
 interface BootstrapPayload {
   currentUser: User | null;
@@ -24,6 +32,14 @@ interface BootstrapPayload {
   sales_budgets: SalesBudget[];
   daily_sales: DailySale[];
   stores: Store[];
+  product_categories: ProductCategory[];
+  products: Product[];
+  product_variants: ProductVariant[];
+  product_prices: ProductPrice[];
+  suppliers: Supplier[];
+  inventory: InventoryItem[];
+  inventory_movements: InventoryMovement[];
+  product_batches: ProductBatch[];
 }
 
 interface AuthResponse {
@@ -62,6 +78,20 @@ interface AppContextType {
   updateStore: (id: string, updates: Partial<Store>) => void;
   deleteStore: (id: string) => void;
   assignSellersToStore: (storeId: string, sellerIds: string[]) => void;
+  productCategories: ProductCategory[];
+  products: Product[];
+  productVariants: ProductVariant[];
+  productPrices: ProductPrice[];
+  suppliers: Supplier[];
+  inventory: InventoryItem[];
+  inventoryMovements: InventoryMovement[];
+  productBatches: ProductBatch[];
+  saveCategory: (category: ProductCategory) => void;
+  saveProductBundle: (product: Product, variant: ProductVariant, price: ProductPrice) => void;
+  deactivateProduct: (productId: string) => void;
+  saveSupplier: (supplier: Supplier) => void;
+  adjustInventory: (inventory: InventoryItem, quantityDelta: number, reason: string, type?: InventoryMovementType) => void;
+  receiveBatch: (batch: ProductBatch, inventory: InventoryItem) => void;
   notifications: NotificationItem[];
   unreadNotificationCount: number;
   markAsRead: (notifId: string) => void;
@@ -69,8 +99,8 @@ interface AppContextType {
   activityLogs: ActivityLog[];
   theme: 'dark' | 'light';
   toggleTheme: () => void;
-  activeTab: 'dashboard' | 'tasks' | 'sops' | 'kpis' | 'team' | 'exports' | 'supabase_cloud' | 'sales' | 'stores';
-  setActiveTab: (tab: 'dashboard' | 'tasks' | 'sops' | 'kpis' | 'team' | 'exports' | 'supabase_cloud' | 'sales' | 'stores') => void;
+  activeTab: 'dashboard' | 'tasks' | 'sops' | 'kpis' | 'team' | 'exports' | 'supabase_cloud' | 'sales' | 'stores' | 'products';
+  setActiveTab: (tab: 'dashboard' | 'tasks' | 'sops' | 'kpis' | 'team' | 'exports' | 'supabase_cloud' | 'sales' | 'stores' | 'products') => void;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
   selectedDeptFilter: Department | 'all';
@@ -170,6 +200,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [salesBudgets, setSalesBudgets] = useState<SalesBudget[]>([]);
   const [dailySales, setDailySales] = useState<DailySale[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
+  const [productCategories, setProductCategories] = useState<ProductCategory[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [productVariants, setProductVariants] = useState<ProductVariant[]>([]);
+  const [productPrices, setProductPrices] = useState<ProductPrice[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [inventoryMovements, setInventoryMovements] = useState<InventoryMovement[]>([]);
+  const [productBatches, setProductBatches] = useState<ProductBatch[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
 
@@ -177,7 +215,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return (localStorage.getItem('stoners_theme') as 'dark' | 'light') || 'light';
   });
 
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'tasks' | 'sops' | 'kpis' | 'team' | 'exports' | 'supabase_cloud' | 'sales' | 'stores'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'tasks' | 'sops' | 'kpis' | 'team' | 'exports' | 'supabase_cloud' | 'sales' | 'stores' | 'products'>('dashboard');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDeptFilter, setSelectedDeptFilter] = useState<Department | 'all'>('all');
   const [isSyncing, setIsSyncing] = useState(true);
@@ -221,6 +259,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSalesBudgets(data.sales_budgets || []);
         setDailySales(data.daily_sales || []);
         setStores(data.stores || []);
+        setProductCategories(data.product_categories || []);
+        setProducts(data.products || []);
+        setProductVariants(data.product_variants || []);
+        setProductPrices(data.product_prices || []);
+        setSuppliers(data.suppliers || []);
+        setInventory(data.inventory || []);
+        setInventoryMovements(data.inventory_movements || []);
+        setProductBatches(data.product_batches || []);
         setIsSyncing(true);
       })
       .catch((error) => {
@@ -354,6 +400,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setSalesBudgets([]);
       setDailySales([]);
       setStores([]);
+      setProductCategories([]);
+      setProducts([]);
+      setProductVariants([]);
+      setProductPrices([]);
+      setSuppliers([]);
+      setInventory([]);
+      setInventoryMovements([]);
+      setProductBatches([]);
     } catch (err) {
       console.error('Error al cerrar sesión de Google:', err);
     } finally {
@@ -396,6 +450,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setUsers(prev => [data.payload, ...prev.filter(item => item.id !== data.payload.id)]);
           } else if (data.type === 'SOP_CREATED') {
             setSops(prev => [data.payload, ...prev.filter(item => item.id !== data.payload.id)]);
+          } else if (data.type === 'SALE_RECORDED') {
+            setDailySales(prev => [data.payload.sale, ...prev.filter(item => item.id !== data.payload.sale.id)]);
+            setInventory(prev => {
+              const changed = new Map<string, InventoryItem>(data.payload.inventory.map((item: InventoryItem) => [item.id, item]));
+              return [...changed.values(), ...prev.filter(item => !changed.has(item.id))];
+            });
+            setInventoryMovements(prev => [...data.payload.movements, ...prev]);
+          } else if (data.type === 'SALE_DELETED') {
+            setDailySales(prev => prev.filter(item => item.id !== data.payload.id));
+            setInventory(prev => {
+              const changed = new Map<string, InventoryItem>(data.payload.inventory.map((item: InventoryItem) => [item.id, item]));
+              return [...changed.values(), ...prev.filter(item => !changed.has(item.id))];
+            });
+            setInventoryMovements(prev => [...data.payload.movements, ...prev]);
           } else if (data.type === 'DATA_UPSERTED') {
             const { collection, record } = data.payload;
             const upsert = <T extends { id: string }>(items: T[]) => [record, ...items.filter(item => item.id !== record.id)];
@@ -408,6 +476,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             if (collection === 'sales_budgets') setSalesBudgets(upsert);
             if (collection === 'daily_sales') setDailySales(upsert);
             if (collection === 'stores') setStores(upsert);
+            if (collection === 'product_categories') setProductCategories(upsert);
+            if (collection === 'products') setProducts(upsert);
+            if (collection === 'product_variants') setProductVariants(upsert);
+            if (collection === 'product_prices') setProductPrices(upsert);
+            if (collection === 'suppliers') setSuppliers(upsert);
+            if (collection === 'inventory') setInventory(upsert);
+            if (collection === 'inventory_movements') setInventoryMovements(upsert);
+            if (collection === 'product_batches') setProductBatches(upsert);
           } else if (data.type === 'DATA_DELETED') {
             const { collection, id } = data.payload;
             if (collection === 'users') setUsers(prev => prev.filter(item => item.id !== id));
@@ -419,6 +495,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             if (collection === 'sales_budgets') setSalesBudgets(prev => prev.filter(item => item.id !== id));
             if (collection === 'daily_sales') setDailySales(prev => prev.filter(item => item.id !== id));
             if (collection === 'stores') setStores(prev => prev.filter(item => item.id !== id));
+            if (collection === 'product_categories') setProductCategories(prev => prev.filter(item => item.id !== id));
+            if (collection === 'products') setProducts(prev => prev.filter(item => item.id !== id));
+            if (collection === 'product_variants') setProductVariants(prev => prev.filter(item => item.id !== id));
+            if (collection === 'product_prices') setProductPrices(prev => prev.filter(item => item.id !== id));
+            if (collection === 'suppliers') setSuppliers(prev => prev.filter(item => item.id !== id));
+            if (collection === 'inventory') setInventory(prev => prev.filter(item => item.id !== id));
+            if (collection === 'inventory_movements') setInventoryMovements(prev => prev.filter(item => item.id !== id));
+            if (collection === 'product_batches') setProductBatches(prev => prev.filter(item => item.id !== id));
           }
         } catch (e) {
           console.warn('SSE Parse error', e);
@@ -641,27 +725,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const newSale: DailySale = {
       ...saleData,
       id: `sale-${Date.now()}`,
-      timestamp: new Date().toLocaleString('es-CO')
+      timestamp: new Date().toISOString()
     };
-    setDailySales(prev => [newSale, ...prev]);
-    persistRecord('daily_sales', newSale);
-    logActivity('Registro de Venta', `Vendedor ${saleData.sellerName} registró venta de $${saleData.amount.toLocaleString()} por canal ${saleData.channel}`, 'sales');
+    void apiRequest<{ sale: DailySale; inventory: InventoryItem[]; movements: InventoryMovement[] }>('/api/sales', {
+      method: 'POST', body: JSON.stringify(newSale),
+    }).then(result => {
+      setDailySales(prev => [result.sale, ...prev.filter(sale => sale.id !== result.sale.id)]);
+      setInventory(prev => [...result.inventory, ...prev.filter(item => !result.inventory.some(changed => changed.id === item.id))]);
+      setInventoryMovements(prev => [...result.movements, ...prev]);
+      logActivity('Registro de Venta', `Vendedor ${result.sale.sellerName} registró venta de $${result.sale.amount.toLocaleString()}`, 'sales');
+    }).catch(error => window.alert(error instanceof Error ? error.message : 'No se pudo registrar la venta.'));
   };
 
   const updateDailySale = (id: string, updates: Partial<DailySale>) => {
-    setDailySales(prev => prev.map(s => {
-      if (s.id !== id) return s;
-      const updated = { ...s, ...updates };
-      persistRecord('daily_sales', updated);
-      return updated;
-    }));
-    logActivity('Venta Actualizada', `Modificó datos de venta ID ${id}`, 'sales');
+    const existing = dailySales.find(sale => sale.id === id);
+    if (!existing) return;
+    void apiRequest<{ sale: DailySale; inventory: InventoryItem[]; movements: InventoryMovement[] }>(`/api/sales/${id}`, {
+      method: 'PUT', body: JSON.stringify({ ...existing, ...updates }),
+    }).then(result => {
+      setDailySales(prev => [result.sale, ...prev.filter(sale => sale.id !== result.sale.id)]);
+      setInventory(prev => [...result.inventory, ...prev.filter(item => !result.inventory.some(changed => changed.id === item.id))]);
+      setInventoryMovements(prev => [...result.movements, ...prev]);
+      logActivity('Venta Actualizada', `Modificó datos de venta ID ${id}`, 'sales');
+    }).catch(error => window.alert(error instanceof Error ? error.message : 'No se pudo actualizar la venta.'));
   };
 
   const deleteDailySale = (id: string) => {
-    setDailySales(prev => prev.filter(s => s.id !== id));
-    removeRecord('daily_sales', id);
-    logActivity('Venta Eliminada', `Eliminó registro de venta ID ${id}`, 'sales');
+    void apiRequest<{ id: string; inventory: InventoryItem[]; movements: InventoryMovement[] }>(`/api/sales/${id}`, {
+      method: 'DELETE',
+    }).then(result => {
+      setDailySales(prev => prev.filter(s => s.id !== id));
+      setInventory(prev => [...result.inventory, ...prev.filter(item => !result.inventory.some(changed => changed.id === item.id))]);
+      setInventoryMovements(prev => [...result.movements, ...prev]);
+      logActivity('Venta Eliminada', `Eliminó registro de venta ID ${id}`, 'sales');
+    }).catch(error => window.alert(error instanceof Error ? error.message : 'No se pudo eliminar la venta.'));
   };
 
   const addStore = (storeData: Omit<Store, 'id'>) => {
@@ -722,6 +819,70 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     logActivity('Asignación de Vendedores', `Actualizó vendedores asignados a ${targetStore.name} (${sellerIds.length} vendedores)`, 'admin');
   };
 
+  const saveCategory = (category: ProductCategory) => {
+    setProductCategories(prev => [category, ...prev.filter(item => item.id !== category.id)]);
+    persistRecord('product_categories', category);
+    logActivity('Categoría guardada', `Guardó la categoría de productos ${category.name}`, 'admin');
+  };
+
+  const saveProductBundle = (product: Product, variant: ProductVariant, price: ProductPrice) => {
+    void apiRequest<{ product: Product; variant: ProductVariant; price: ProductPrice }>('/api/products/bundle', {
+      method: 'POST', body: JSON.stringify({ product, variant, price }),
+    }).then(result => {
+      setProducts(prev => [result.product, ...prev.filter(item => item.id !== result.product.id)]);
+      setProductVariants(prev => [result.variant, ...prev.filter(item => item.id !== result.variant.id)]);
+      setProductPrices(prev => [result.price, ...prev.filter(item => item.id !== result.price.id)]);
+      logActivity('Producto guardado', `Guardó ${result.product.name} (${result.variant.sku}) en el catálogo`, 'admin');
+    }).catch(error => window.alert(error instanceof Error ? error.message : 'No se pudo guardar el producto.'));
+  };
+
+  const deactivateProduct = (productId: string) => {
+    const product = products.find(item => item.id === productId);
+    if (!product) return;
+    const updated: Product = { ...product, status: 'discontinued', updatedAt: new Date().toISOString() };
+    setProducts(prev => prev.map(item => item.id === productId ? updated : item));
+    setProductVariants(prev => prev.map(item => {
+      if (item.productId !== productId) return item;
+      const variant = { ...item, active: false };
+      persistRecord('product_variants', variant);
+      return variant;
+    }));
+    persistRecord('products', updated);
+    logActivity('Producto descontinuado', `Descontinuó ${product.name} sin borrar su historial`, 'admin');
+  };
+
+  const saveSupplier = (supplier: Supplier) => {
+    setSuppliers(prev => [supplier, ...prev.filter(item => item.id !== supplier.id)]);
+    persistRecord('suppliers', supplier);
+    logActivity('Proveedor guardado', `Guardó el proveedor ${supplier.name}`, 'admin');
+  };
+
+  const adjustInventory = (
+    inventoryItem: InventoryItem,
+    quantityDelta: number,
+    reason: string,
+    type: InventoryMovementType = 'adjustment',
+  ) => {
+    void apiRequest<{ inventory: InventoryItem; movement: InventoryMovement }>('/api/inventory/adjust', {
+      method: 'POST', body: JSON.stringify({ inventory: inventoryItem, quantityDelta, reason, type }),
+    }).then(result => {
+      setInventory(prev => [result.inventory, ...prev.filter(item => item.id !== result.inventory.id)]);
+      setInventoryMovements(prev => [result.movement, ...prev.filter(item => item.id !== result.movement.id)]);
+      logActivity('Ajuste de inventario', `${result.inventory.productName}: ${quantityDelta >= 0 ? '+' : ''}${quantityDelta} en ${result.inventory.storeName}`, 'admin');
+    }).catch(error => window.alert(error instanceof Error ? error.message : 'No se pudo ajustar el inventario.'));
+  };
+
+  const receiveBatch = (batch: ProductBatch, inventoryItem: InventoryItem) => {
+    void apiRequest<{ batch: ProductBatch; inventory: InventoryItem; movement: InventoryMovement }>('/api/inventory/batches', {
+      method: 'POST', body: JSON.stringify({ batch, inventory: inventoryItem }),
+    }).then(result => {
+      setProductBatches(prev => [result.batch, ...prev.filter(item => item.id !== result.batch.id)]);
+      setInventory(prev => [result.inventory, ...prev.filter(item => item.id !== result.inventory.id)]);
+      setInventoryMovements(prev => [result.movement, ...prev.filter(item => item.id !== result.movement.id)]);
+      logActivity('Lote recibido', `Recibió el lote ${result.batch.lotNumber} con ${result.batch.quantityReceived} unidades`, 'admin');
+    }).catch(error => window.alert(error instanceof Error ? error.message : 'No se pudo recibir el lote.'));
+  };
+
   const markAsRead = (notifId: string) => {
     setNotifications(prev => prev.map(n => {
       if (n.id !== notifId) return n;
@@ -774,6 +935,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateStore,
         deleteStore,
         assignSellersToStore,
+        productCategories,
+        products,
+        productVariants,
+        productPrices,
+        suppliers,
+        inventory,
+        inventoryMovements,
+        productBatches,
+        saveCategory,
+        saveProductBundle,
+        deactivateProduct,
+        saveSupplier,
+        adjustInventory,
+        receiveBatch,
         notifications,
         unreadNotificationCount,
         markAsRead,

@@ -27,6 +27,25 @@ Si `SUPABASE_URL` y `SUPABASE_SECRET_KEY` están vacías, Express usa memoria so
 
 La clave secreta es exclusiva del backend. Nunca debe guardarse en variables `VITE_*`, GitHub Pages, código fuente o `localStorage`.
 
+Si el proyecto de Supabase ya existía, vuelve a ejecutar `supabase/schema.sql`: el script amplía la restricción de colecciones y crea la función transaccional usada por ventas e inventario, sin borrar los registros existentes.
+
+## Catálogo, inventario y ventas
+
+El módulo **Productos e Inventario** incluye catálogo, categorías, precios, existencias por tienda, proveedores, lotes y movimientos. Los permisos son:
+
+- **Administrador:** crea y modifica productos, proveedores, lotes y stock.
+- **Contador:** consulta costos, valor del inventario, ventas y utilidad.
+- **Vendedor:** consulta precio y disponibilidad; registra ventas únicamente en sus tiendas asignadas.
+
+Las ventas con productos validan el stock en Express y guardan venta, descuento de inventario y movimientos en una sola transacción de PostgreSQL. Al editar o eliminar una venta, las existencias se recalculan o se devuelven.
+
+Para importar productos usa un `.xlsx`, `.xls` o `.csv` con estas columnas. `nombre` y `sku` son obligatorias:
+
+```text
+nombre, sku, codigo_barras, categoria, marca, unidad, descripcion,
+costo, precio_venta, iva, presentacion, registro_sanitario
+```
+
 ## Desplegar la API en Render
 
 El archivo `render.yaml` crea el servicio. Configura en Render:

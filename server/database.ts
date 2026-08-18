@@ -10,6 +10,14 @@ export const COLLECTIONS = [
   'sales_budgets',
   'daily_sales',
   'stores',
+  'product_categories',
+  'products',
+  'product_variants',
+  'product_prices',
+  'suppliers',
+  'inventory',
+  'inventory_movements',
+  'product_batches',
 ] as const;
 
 export type CollectionName = (typeof COLLECTIONS)[number];
@@ -120,4 +128,28 @@ export async function findRecordByField<T extends { id: string }>(
 ): Promise<T | null> {
   const records = await listRecords<T>(collection);
   return records.find((record) => record[field] === value) || null;
+}
+
+export async function applyRecordTransaction(
+  upserts: Array<{ collection: CollectionName; record: { id: string } }>,
+  deletes: Array<{ collection: CollectionName; id: string }> = [],
+): Promise<void> {
+  const supabase = getClient();
+  if (!supabase) {
+    assertDevelopmentFallback();
+    upserts.forEach(({ collection, record }) => memoryStore.get(collection)!.set(record.id, record));
+    deletes.forEach(({ collection, id }) => memoryStore.get(collection)!.delete(id));
+    return;
+  }
+
+  const { error } = await supabase.rpc('apply_app_records_transaction', {
+    p_upserts: upserts.map(({ collection, record }) => ({
+      entity_type: collection,
+      entity_id: record.id,
+      payload: record,
+    })),
+    p_deletes: deletes.map(({ collection, id }) => ({ entity_type: collection, entity_id: id })),
+  });
+
+  if (error) throw new Error(`No se pudo completar la transacción: ${error.message}`);
 }

@@ -22,9 +22,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // server.ts
+var import_config = require("dotenv/config");
 var import_express = __toESM(require("express"), 1);
 var import_crypto = __toESM(require("crypto"), 1);
-var import_path = __toESM(require("path"), 1);
 var import_vite = require("vite");
 var import_genai = require("@google/genai");
 
@@ -39,7 +39,15 @@ var COLLECTIONS = [
   "activity_logs",
   "sales_budgets",
   "daily_sales",
-  "stores"
+  "stores",
+  "product_categories",
+  "products",
+  "product_variants",
+  "product_prices",
+  "suppliers",
+  "inventory",
+  "inventory_movements",
+  "product_batches"
 ];
 var memoryStore = new Map(
   COLLECTIONS.map((collection) => [collection, /* @__PURE__ */ new Map()])
@@ -111,9 +119,27 @@ async function findRecordByField(collection, field, value) {
   const records = await listRecords(collection);
   return records.find((record) => record[field] === value) || null;
 }
+async function applyRecordTransaction(upserts, deletes = []) {
+  const supabase = getClient();
+  if (!supabase) {
+    assertDevelopmentFallback();
+    upserts.forEach(({ collection, record }) => memoryStore.get(collection).set(record.id, record));
+    deletes.forEach(({ collection, id }) => memoryStore.get(collection).delete(id));
+    return;
+  }
+  const { error } = await supabase.rpc("apply_app_records_transaction", {
+    p_upserts: upserts.map(({ collection, record }) => ({
+      entity_type: collection,
+      entity_id: record.id,
+      payload: record
+    })),
+    p_deletes: deletes.map(({ collection, id }) => ({ entity_type: collection, entity_id: id }))
+  });
+  if (error) throw new Error(`No se pudo completar la transacci\xF3n: ${error.message}`);
+}
 
 // server.ts
-var sseClients = /* @__PURE__ */ new Set();
+var sseClients = /* @__PURE__ */ new Map();
 function getSessionSecret() {
   const secret = process.env.SESSION_SECRET || (process.env.NODE_ENV !== "production" ? "stoners-local-development-secret" : "");
   if (!secret) throw new Error("SESSION_SECRET no est\xE1 configurado en Render.");
@@ -144,8 +170,12 @@ function verifySession(token) {
   }
 }
 async function verifyFirebaseIdToken(idToken) {
-  const apiKey = process.env.FIREBASE_API_KEY?.trim();
-  if (!apiKey) throw new Error("FIREBASE_API_KEY no est\xE1 configurado en Render.");
+  const apiKey = (process.env.FIREBASE_API_KEY || (process.env.NODE_ENV !== "production" ? process.env.VITE_FIREBASE_API_KEY : ""))?.trim();
+  if (!apiKey) {
+    throw new Error(
+      process.env.NODE_ENV === "production" ? "FIREBASE_API_KEY no est\xE1 configurado en Render." : "Falta VITE_FIREBASE_API_KEY o FIREBASE_API_KEY en el archivo .env local."
+    );
+  }
   const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(apiKey)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -188,9 +218,28 @@ function sanitizeUser(user) {
   const { pinCode: _pinCode, pinHash: _pinHash, ...safeUser } = user;
   return safeUser;
 }
+function sanitizeSaleForRole(sale, role) {
+  if (!sale || role !== "vendedor") return sale;
+  return {
+    ...sale,
+    costTotal: void 0,
+    items: sale.items?.map((item) => ({ ...item, unitCost: 0 }))
+  };
+}
 function broadcastSyncEvent(eventType, payload) {
-  const data = JSON.stringify({ type: eventType, payload, timestamp: (/* @__PURE__ */ new Date()).toISOString() });
-  sseClients.forEach((client2) => {
+  sseClients.forEach((role, client2) => {
+    let safePayload = payload;
+    if (role === "vendedor" && eventType === "DATA_UPSERTED") {
+      if (["suppliers", "inventory_movements", "product_batches"].includes(payload.collection)) return;
+      if (payload.collection === "product_prices") {
+        const { cost: _cost, ...record } = payload.record;
+        safePayload = { ...payload, record };
+      }
+    }
+    if (role === "vendedor" && (eventType === "SALE_RECORDED" || eventType === "SALE_DELETED")) {
+      safePayload = { ...payload, sale: sanitizeSaleForRole(payload.sale, role), movements: [] };
+    }
+    const data = JSON.stringify({ type: eventType, payload: safePayload, timestamp: (/* @__PURE__ */ new Date()).toISOString() });
     client2.write(`data: ${data}
 
 `);
@@ -291,22 +340,63 @@ async function startServer() {
     next();
   });
   app.get("/api/bootstrap", asyncRoute(async (_req, res) => {
+    const session = res.locals.session;
+    const currentUser = await findRecord("users", session.sub);
     const entries = await Promise.all(
       COLLECTIONS.map(async (collection) => {
-        const records = await listRecords(collection);
-        return [collection, collection === "users" ? records.map(sanitizeUser) : records];
+        let records = await listRecords(collection);
+        if (collection === "users") records = records.map(sanitizeUser);
+        if (currentUser?.role === "vendedor") {
+          if (collection === "product_prices") {
+            records = records.map(({ cost: _cost, ...price }) => price);
+          }
+          if (collection === "suppliers" || collection === "inventory_movements" || collection === "product_batches") {
+            records = [];
+          }
+          if (collection === "daily_sales") {
+            records = records.map((sale) => sanitizeSaleForRole(sale, currentUser.role));
+          }
+        }
+        return [collection, records];
       })
     );
     const state = Object.fromEntries(entries);
-    const session = res.locals.session;
-    const currentUser = await findRecord("users", session.sub);
     res.json({ ...state, currentUser: currentUser ? sanitizeUser(currentUser) : null });
   }));
+  const productWriteCollections = [
+    "product_categories",
+    "products",
+    "product_variants",
+    "product_prices",
+    "suppliers",
+    "inventory",
+    "inventory_movements",
+    "product_batches",
+    "daily_sales"
+  ];
+  const requireAdminForProductWrite = async (collection, res) => {
+    if (!productWriteCollections.includes(collection)) return true;
+    const session = res.locals.session;
+    const actor = await findRecord("users", session.sub);
+    if (actor?.role === "admin") return true;
+    res.status(403).json({ error: "Solo un Administrador puede modificar cat\xE1logo e inventario." });
+    return false;
+  };
+  const getAdminActor = async (res) => {
+    const session = res.locals.session;
+    const actor = await findRecord("users", session.sub);
+    if (!actor || actor.role !== "admin") {
+      res.status(403).json({ error: "Solo un Administrador puede realizar esta operaci\xF3n." });
+      return null;
+    }
+    return actor;
+  };
   app.put("/api/data/:collection/:id", asyncRoute(async (req, res) => {
     const collection = req.params.collection;
     if (!COLLECTIONS.includes(collection)) {
       return res.status(404).json({ error: "Colecci\xF3n no encontrada" });
     }
+    if (!await requireAdminForProductWrite(collection, res)) return;
     let record = { ...req.body, id: req.params.id };
     if (collection === "users") {
       const existing = await findRecord("users", req.params.id);
@@ -327,11 +417,350 @@ async function startServer() {
     if (!COLLECTIONS.includes(collection)) {
       return res.status(404).json({ error: "Colecci\xF3n no encontrada" });
     }
+    if (!await requireAdminForProductWrite(collection, res)) return;
     await deleteRecord(collection, req.params.id);
     broadcastSyncEvent("DATA_DELETED", { collection, id: req.params.id });
     res.json({ success: true, id: req.params.id });
   }));
-  app.get("/api/sync", (req, res) => {
+  app.post("/api/products/bundle", asyncRoute(async (req, res) => {
+    if (!await getAdminActor(res)) return;
+    const product = req.body.product;
+    const variant = req.body.variant;
+    const price = req.body.price;
+    if (!product?.id || !product.name?.trim() || !variant?.id || !variant.sku?.trim() || !price?.id) {
+      return res.status(400).json({ error: "Nombre, SKU y precio son obligatorios." });
+    }
+    if (Number(price.cost) < 0 || Number(price.salePrice) < 0) {
+      return res.status(400).json({ error: "Los precios no pueden ser negativos." });
+    }
+    const variants = await listRecords("product_variants");
+    const duplicate = variants.find((item) => item.id !== variant.id && (item.sku.toLowerCase() === variant.sku.toLowerCase() || Boolean(variant.barcode && item.barcode === variant.barcode)));
+    if (duplicate) return res.status(409).json({ error: "El SKU o c\xF3digo de barras ya est\xE1 registrado." });
+    await applyRecordTransaction([
+      { collection: "products", record: product },
+      { collection: "product_variants", record: variant },
+      { collection: "product_prices", record: price }
+    ]);
+    broadcastSyncEvent("DATA_UPSERTED", { collection: "products", record: product });
+    broadcastSyncEvent("DATA_UPSERTED", { collection: "product_variants", record: variant });
+    broadcastSyncEvent("DATA_UPSERTED", { collection: "product_prices", record: price });
+    res.status(201).json({ product, variant, price });
+  }));
+  app.post("/api/inventory/adjust", asyncRoute(async (req, res) => {
+    const actor = await getAdminActor(res);
+    if (!actor) return;
+    const requested = req.body.inventory;
+    const quantityDelta = Number(req.body.quantityDelta);
+    const reason = String(req.body.reason || "").trim();
+    const type = req.body.type || "adjustment";
+    if (!requested?.storeId || !requested?.variantId || !Number.isFinite(quantityDelta) || !reason) {
+      return res.status(400).json({ error: "Producto, tienda, cantidad y motivo son obligatorios." });
+    }
+    const [store, variant, existingItems] = await Promise.all([
+      findRecord("stores", requested.storeId),
+      findRecord("product_variants", requested.variantId),
+      listRecords("inventory")
+    ]);
+    if (!store?.active || !variant?.active) return res.status(400).json({ error: "La tienda o el producto no est\xE1n activos." });
+    const product = await findRecord("products", variant.productId);
+    if (!product) return res.status(400).json({ error: "Producto no encontrado." });
+    const existing = existingItems.find((item) => item.storeId === store.id && item.variantId === variant.id);
+    const previousQuantity = existing?.quantity || 0;
+    if (previousQuantity + quantityDelta < 0) return res.status(409).json({ error: `El ajuste dejar\xEDa el inventario negativo. Disponible: ${previousQuantity}.` });
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const record = {
+      ...requested,
+      ...existing,
+      id: existing?.id || `${store.id}:${variant.id}`,
+      storeId: store.id,
+      storeName: store.name,
+      productId: product.id,
+      variantId: variant.id,
+      sku: variant.sku,
+      productName: product.name,
+      quantity: previousQuantity + quantityDelta,
+      reservedQuantity: existing?.reservedQuantity || 0,
+      updatedAt: now
+    };
+    const movement = {
+      id: `mov-${Date.now()}-${import_crypto.default.randomBytes(3).toString("hex")}`,
+      inventoryId: record.id,
+      storeId: store.id,
+      storeName: store.name,
+      productId: product.id,
+      variantId: variant.id,
+      sku: variant.sku,
+      productName: product.name,
+      type,
+      quantity: quantityDelta,
+      previousQuantity,
+      newQuantity: record.quantity,
+      reason,
+      userId: actor.id,
+      userName: actor.name,
+      timestamp: now
+    };
+    await applyRecordTransaction([
+      { collection: "inventory", record },
+      { collection: "inventory_movements", record: movement }
+    ]);
+    broadcastSyncEvent("DATA_UPSERTED", { collection: "inventory", record });
+    broadcastSyncEvent("DATA_UPSERTED", { collection: "inventory_movements", record: movement });
+    res.status(201).json({ inventory: record, movement });
+  }));
+  app.post("/api/inventory/batches", asyncRoute(async (req, res) => {
+    const actor = await getAdminActor(res);
+    if (!actor) return;
+    const batch = req.body.batch;
+    const requested = req.body.inventory;
+    if (!batch?.lotNumber?.trim() || !batch.variantId || !batch.storeId || Number(batch.quantityReceived) <= 0) {
+      return res.status(400).json({ error: "Lote, producto, tienda y cantidad recibida son obligatorios." });
+    }
+    const duplicate = (await listRecords("product_batches")).find((item) => item.id !== batch.id && item.productId === batch.productId && item.lotNumber.toLowerCase() === batch.lotNumber.toLowerCase());
+    if (duplicate) return res.status(409).json({ error: "Este n\xFAmero de lote ya existe para el producto." });
+    const [store, variant, product, existingItems] = await Promise.all([
+      findRecord("stores", batch.storeId),
+      findRecord("product_variants", batch.variantId),
+      findRecord("products", batch.productId),
+      listRecords("inventory")
+    ]);
+    if (!store?.active || !variant?.active || !product || variant.productId !== product.id) {
+      return res.status(400).json({ error: "La tienda o el producto del lote no son v\xE1lidos." });
+    }
+    const existing = existingItems.find((item) => item.storeId === store.id && item.variantId === variant.id);
+    const previousQuantity = existing?.quantity || 0;
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const record = {
+      ...requested,
+      ...existing,
+      id: existing?.id || `${store.id}:${variant.id}`,
+      storeId: store.id,
+      storeName: store.name,
+      productId: product.id,
+      variantId: variant.id,
+      sku: variant.sku,
+      productName: product.name,
+      quantity: previousQuantity + Number(batch.quantityReceived),
+      reservedQuantity: existing?.reservedQuantity || 0,
+      updatedAt: now
+    };
+    const savedBatch = { ...batch, productId: product.id, variantId: variant.id, storeId: store.id, quantityReceived: Number(batch.quantityReceived), remainingQuantity: Number(batch.quantityReceived), createdAt: batch.createdAt || now };
+    const movement = {
+      id: `mov-${Date.now()}-${import_crypto.default.randomBytes(3).toString("hex")}`,
+      inventoryId: record.id,
+      storeId: store.id,
+      storeName: store.name,
+      productId: product.id,
+      variantId: variant.id,
+      sku: variant.sku,
+      productName: product.name,
+      type: "entry",
+      quantity: savedBatch.quantityReceived,
+      previousQuantity,
+      newQuantity: record.quantity,
+      reason: `Recepci\xF3n de lote ${savedBatch.lotNumber}`,
+      referenceId: savedBatch.id,
+      userId: actor.id,
+      userName: actor.name,
+      timestamp: now
+    };
+    await applyRecordTransaction([
+      { collection: "product_batches", record: savedBatch },
+      { collection: "inventory", record },
+      { collection: "inventory_movements", record: movement }
+    ]);
+    broadcastSyncEvent("DATA_UPSERTED", { collection: "product_batches", record: savedBatch });
+    broadcastSyncEvent("DATA_UPSERTED", { collection: "inventory", record });
+    broadcastSyncEvent("DATA_UPSERTED", { collection: "inventory_movements", record: movement });
+    res.status(201).json({ batch: savedBatch, inventory: record, movement });
+  }));
+  const prepareSale = async (body, session, existingSale) => {
+    const actor = await findRecord("users", session.sub);
+    if (!actor) throw new Error("El usuario de la sesi\xF3n ya no existe.");
+    if (actor.role === "contador") throw new Error("El rol Contador solo puede consultar las ventas.");
+    if (existingSale && actor.role !== "admin" && existingSale.sellerId !== actor.id) {
+      throw new Error("Solo puedes modificar tus propias ventas.");
+    }
+    const storeId = String(body.storeId || "");
+    if (!storeId) throw new Error("Selecciona una tienda para registrar la venta.");
+    const store = await findRecord("stores", storeId);
+    if (!store || !store.active) throw new Error("La tienda seleccionada no est\xE1 activa.");
+    if (actor.role === "vendedor" && !actor.storeIds?.includes(storeId) && !store.assignedSellerIds?.includes(actor.id)) {
+      throw new Error("No est\xE1s asignado a la tienda seleccionada.");
+    }
+    const seller = actor.role === "admin" && body.sellerId ? await findRecord("users", String(body.sellerId)) || actor : actor;
+    const products = await listRecords("products");
+    const variants = await listRecords("product_variants");
+    const prices = await listRecords("product_prices");
+    const inventory = await listRecords("inventory");
+    const inventoryMap = new Map(inventory.map((item) => [item.id, { ...item }]));
+    const saleItems = [];
+    const changedInventory = [];
+    const movements = [];
+    for (const oldItem of existingSale?.items || []) {
+      const stock = inventory.find((item) => item.storeId === existingSale?.storeId && item.variantId === oldItem.variantId);
+      if (stock) {
+        const restored = inventoryMap.get(stock.id);
+        restored.quantity += oldItem.quantity;
+        changedInventory.push(restored);
+      }
+    }
+    const saleId = existingSale?.id || body.id || `sale-${Date.now()}`;
+    for (const requested of Array.isArray(body.items) ? body.items : []) {
+      const variant = variants.find((item) => item.id === requested.variantId && item.active);
+      if (!variant) throw new Error("Una variante seleccionada ya no est\xE1 disponible.");
+      const product = products.find((item) => item.id === variant.productId && item.status === "active");
+      if (!product) throw new Error(`El producto ${variant.sku} no est\xE1 activo.`);
+      const price = prices.find((item) => item.variantId === variant.id && item.storeId === storeId) || prices.find((item) => item.variantId === variant.id && !item.storeId);
+      if (!price) throw new Error(`El producto ${variant.sku} no tiene precio configurado.`);
+      const quantity = Math.max(1, Math.floor(Number(requested.quantity) || 1));
+      const storedInventory = inventory.find((item) => item.storeId === storeId && item.variantId === variant.id);
+      const stock = storedInventory ? inventoryMap.get(storedInventory.id) : void 0;
+      const inventoryId = stock?.id || `${storeId}:${variant.id}`;
+      const available = stock ? stock.quantity - stock.reservedQuantity : 0;
+      if (!stock || available < quantity) {
+        throw new Error(`Stock insuficiente para ${product.name}. Disponible: ${Math.max(0, available)}.`);
+      }
+      const previousQuantity = stock.quantity;
+      stock.quantity -= quantity;
+      stock.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+      const lineBase = price.salePrice * quantity;
+      const discountAmount2 = Math.min(lineBase, Math.max(0, Number(requested.discountAmount) || 0));
+      const taxableAmount = lineBase - discountAmount2;
+      const taxAmount2 = Math.round(taxableAmount * ((price.taxRate ?? product.taxRate) / 100));
+      saleItems.push({
+        productId: product.id,
+        variantId: variant.id,
+        productName: product.name,
+        variantName: variant.name,
+        sku: variant.sku,
+        quantity,
+        unitPrice: price.salePrice,
+        unitCost: price.cost,
+        discountAmount: discountAmount2,
+        taxAmount: taxAmount2,
+        subtotal: lineBase
+      });
+      if (!changedInventory.some((item) => item.id === stock.id)) changedInventory.push(stock);
+      movements.push({
+        id: `mov-${Date.now()}-${movements.length}`,
+        inventoryId,
+        storeId,
+        storeName: stock.storeName,
+        productId: product.id,
+        variantId: variant.id,
+        sku: variant.sku,
+        productName: product.name,
+        type: "sale",
+        quantity: -quantity,
+        previousQuantity,
+        newQuantity: stock.quantity,
+        reason: existingSale ? "Actualizaci\xF3n de venta" : "Venta registrada",
+        referenceId: saleId,
+        userId: actor.id,
+        userName: actor.name,
+        timestamp: (/* @__PURE__ */ new Date()).toISOString()
+      });
+    }
+    const subtotal = saleItems.reduce((sum, item) => sum + item.subtotal, 0);
+    const discountAmount = saleItems.reduce((sum, item) => sum + item.discountAmount, 0);
+    const taxAmount = saleItems.reduce((sum, item) => sum + item.taxAmount, 0);
+    const amount = saleItems.length ? subtotal - discountAmount + taxAmount : Number(body.amount) || 0;
+    if (amount <= 0) throw new Error("La venta debe tener un valor mayor a cero.");
+    const sale = {
+      ...existingSale,
+      id: saleId,
+      sellerId: seller.id,
+      sellerName: seller.name,
+      storeId,
+      storeName: store.name,
+      date: body.date || (/* @__PURE__ */ new Date()).toISOString().slice(0, 10),
+      amount,
+      channel: body.channel || "tienda",
+      clientName: body.clientName,
+      description: body.description,
+      timestamp: existingSale?.timestamp || (/* @__PURE__ */ new Date()).toISOString(),
+      items: saleItems,
+      subtotal,
+      discountAmount,
+      taxAmount,
+      costTotal: saleItems.reduce((sum, item) => sum + item.unitCost * item.quantity, 0)
+    };
+    return { sale, inventory: changedInventory, movements };
+  };
+  app.post("/api/sales", asyncRoute(async (req, res) => {
+    const session = res.locals.session;
+    const result = await prepareSale(req.body, session);
+    await applyRecordTransaction([
+      { collection: "daily_sales", record: result.sale },
+      ...result.inventory.map((record) => ({ collection: "inventory", record })),
+      ...result.movements.map((record) => ({ collection: "inventory_movements", record }))
+    ]);
+    broadcastSyncEvent("SALE_RECORDED", result);
+    const actor = await findRecord("users", session.sub);
+    res.status(201).json(actor?.role === "vendedor" ? { ...result, sale: sanitizeSaleForRole(result.sale, actor.role), movements: [] } : result);
+  }));
+  app.put("/api/sales/:id", asyncRoute(async (req, res) => {
+    const existing = await findRecord("daily_sales", req.params.id);
+    if (!existing) return res.status(404).json({ error: "Venta no encontrada." });
+    const session = res.locals.session;
+    const result = await prepareSale({ ...req.body, id: existing.id }, session, existing);
+    await applyRecordTransaction([
+      { collection: "daily_sales", record: result.sale },
+      ...result.inventory.map((record) => ({ collection: "inventory", record })),
+      ...result.movements.map((record) => ({ collection: "inventory_movements", record }))
+    ]);
+    broadcastSyncEvent("SALE_RECORDED", result);
+    const actor = await findRecord("users", session.sub);
+    res.json(actor?.role === "vendedor" ? { ...result, sale: sanitizeSaleForRole(result.sale, actor.role), movements: [] } : result);
+  }));
+  app.delete("/api/sales/:id", asyncRoute(async (req, res) => {
+    const sale = await findRecord("daily_sales", req.params.id);
+    if (!sale) return res.status(404).json({ error: "Venta no encontrada." });
+    const session = res.locals.session;
+    const actor = await findRecord("users", session.sub);
+    if (!actor || actor.role === "contador") return res.status(403).json({ error: "No tienes permiso para eliminar ventas." });
+    if (actor.role !== "admin" && sale.sellerId !== actor.id) return res.status(403).json({ error: "Solo puedes eliminar tus propias ventas." });
+    const inventory = await listRecords("inventory");
+    const restored = [];
+    const movements = [];
+    for (const item of sale.items || []) {
+      const stock = inventory.find((record) => record.storeId === sale.storeId && record.variantId === item.variantId);
+      if (!stock) continue;
+      const inventoryId = stock.id;
+      const updated = { ...stock, quantity: stock.quantity + item.quantity, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
+      restored.push(updated);
+      movements.push({
+        id: `mov-${Date.now()}-${movements.length}`,
+        inventoryId,
+        storeId: updated.storeId,
+        storeName: updated.storeName,
+        productId: item.productId,
+        variantId: item.variantId,
+        sku: item.sku,
+        productName: item.productName,
+        type: "return",
+        quantity: item.quantity,
+        previousQuantity: stock.quantity,
+        newQuantity: updated.quantity,
+        reason: "Venta eliminada; inventario restaurado",
+        referenceId: sale.id,
+        userId: actor?.id || session.sub,
+        userName: actor?.name || session.email,
+        timestamp: (/* @__PURE__ */ new Date()).toISOString()
+      });
+    }
+    await applyRecordTransaction([
+      ...restored.map((record) => ({ collection: "inventory", record })),
+      ...movements.map((record) => ({ collection: "inventory_movements", record }))
+    ], [{ collection: "daily_sales", id: sale.id }]);
+    broadcastSyncEvent("SALE_DELETED", { id: sale.id, inventory: restored, movements });
+    res.json({ success: true, id: sale.id, inventory: restored, movements: actor.role === "vendedor" ? [] : movements });
+  }));
+  app.get("/api/sync", asyncRoute(async (req, res) => {
+    const session = res.locals.session;
+    const actor = await findRecord("users", session.sub);
+    if (!actor) return res.status(401).json({ error: "El usuario de la sesi\xF3n ya no existe." });
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
@@ -342,12 +771,12 @@ async function startServer() {
     const heartbeat = setInterval(() => {
       res.write(": keepalive\n\n");
     }, 25e3);
-    sseClients.add(res);
+    sseClients.set(res, actor.role);
     req.on("close", () => {
       clearInterval(heartbeat);
       sseClients.delete(res);
     });
-  });
+  }));
   app.get("/api/users", asyncRoute(async (_req, res) => {
     res.json((await listRecords("users")).map(sanitizeUser));
   }));
@@ -580,6 +1009,9 @@ Instrucciones espec\xEDficas para responder:
     console.error("API Error:", err);
     res.status(500).json({ error: message });
   });
+  app.use("/api", (_req, res) => {
+    res.status(404).json({ error: "Ruta de API no encontrada." });
+  });
   if (process.env.NODE_ENV !== "production") {
     const vite = await (0, import_vite.createServer)({
       server: { middlewareMode: true },
@@ -587,10 +1019,10 @@ Instrucciones espec\xEDficas para responder:
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = import_path.default.join(process.cwd(), "dist");
-    app.use(import_express.default.static(distPath));
+    const frontendUrl = process.env.FRONTEND_URL || "https://lizethvictoria20.github.io/stonersApp/";
     app.get("*", (req, res) => {
-      res.sendFile(import_path.default.join(distPath, "index.html"));
+      const relativePath = req.path === "/" ? "" : req.path.replace(/^\//, "");
+      res.redirect(302, new URL(relativePath, frontendUrl).toString());
     });
   }
   app.listen(PORT, "0.0.0.0", () => {

@@ -173,4 +173,140 @@ export interface DailySale {
   description?: string;
   clientName?: string;
   timestamp: string;
+  items?: SaleItem[];
+  subtotal?: number;
+  discountAmount?: number;
+  taxAmount?: number;
+  costTotal?: number;
+}
+
+export type ProductStatus = 'active' | 'out_of_stock' | 'suspended' | 'discontinued';
+
+export interface ProductCategory {
+  id: string;
+  name: string;
+  slug: string;
+  description?: string;
+  active: boolean;
+}
+
+export interface Product {
+  id: string;
+  sku: string;
+  name: string;
+  description: string;
+  categoryId: string;
+  categoryName: string;
+  brand: string;
+  unit: string;
+  imageUrl?: string;
+  status: ProductStatus;
+  taxRate: number;
+  regulatoryRegistration?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProductVariant {
+  id: string;
+  productId: string;
+  name: string;
+  sku: string;
+  barcode?: string;
+  attributes: Record<string, string>;
+  active: boolean;
+}
+
+export interface ProductPrice {
+  id: string;
+  productId: string;
+  variantId: string;
+  storeId?: string;
+  cost: number;
+  salePrice: number;
+  promoPrice?: number;
+  promoStart?: string;
+  promoEnd?: string;
+  taxRate: number;
+  updatedAt: string;
+}
+
+export interface Supplier {
+  id: string;
+  name: string;
+  taxId?: string;
+  contactName?: string;
+  email?: string;
+  phone?: string;
+  address?: string;
+  active: boolean;
+}
+
+export interface InventoryItem {
+  id: string;
+  storeId: string;
+  storeName: string;
+  productId: string;
+  variantId: string;
+  sku: string;
+  productName: string;
+  quantity: number;
+  reservedQuantity: number;
+  minStock: number;
+  maxStock: number;
+  location?: string;
+  updatedAt: string;
+}
+
+export type InventoryMovementType = 'entry' | 'sale' | 'adjustment' | 'transfer_in' | 'transfer_out' | 'return';
+
+export interface InventoryMovement {
+  id: string;
+  inventoryId: string;
+  storeId: string;
+  storeName: string;
+  productId: string;
+  variantId: string;
+  sku: string;
+  productName: string;
+  type: InventoryMovementType;
+  quantity: number;
+  previousQuantity: number;
+  newQuantity: number;
+  reason: string;
+  referenceId?: string;
+  userId: string;
+  userName: string;
+  timestamp: string;
+}
+
+export interface ProductBatch {
+  id: string;
+  productId: string;
+  variantId: string;
+  supplierId?: string;
+  supplierName?: string;
+  storeId: string;
+  lotNumber: string;
+  manufactureDate?: string;
+  expirationDate?: string;
+  quantityReceived: number;
+  remainingQuantity: number;
+  invoiceReference?: string;
+  regulatoryDocument?: string;
+  createdAt: string;
+}
+
+export interface SaleItem {
+  productId: string;
+  variantId: string;
+  productName: string;
+  variantName: string;
+  sku: string;
+  quantity: number;
+  unitPrice: number;
+  unitCost: number;
+  discountAmount: number;
+  taxAmount: number;
+  subtotal: number;
 }

@@ -12,7 +12,8 @@ import {
   Bot,
   DollarSign,
   Building2,
-  Layers3
+  Layers3,
+  PackageSearch
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { getDepartmentLabel } from '../utils/formatters';
@@ -61,6 +62,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenAIModal }) => {
       icon: Building2, 
       badge: 'Ciudades', 
       adminOnly: true 
+    },
+    {
+      id: 'products',
+      label: 'Productos e Inventario',
+      description: isAdmin ? 'Catálogo, stock y lotes' : 'Catálogo y disponibilidad',
+      section: 'Operación',
+      icon: PackageSearch,
+      badge: 'Stock',
     },
     { 
       id: 'tasks', 

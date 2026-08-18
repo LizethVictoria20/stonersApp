@@ -3,8 +3,26 @@ import express from "express";
 import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
-import { Task, SOPProcedure, User, NotificationItem, Department, UserRole } from "./src/types";
 import {
+  DailySale,
+  InventoryItem,
+  InventoryMovement,
+  InventoryMovementType,
+  Product,
+  ProductBatch,
+  ProductPrice,
+  ProductVariant,
+  SaleItem,
+  Store,
+  Task,
+  SOPProcedure,
+  User,
+  NotificationItem,
+  Department,
+  UserRole,
+} from "./src/types";
+import {
+  applyRecordTransaction,
   checkDatabase,
   COLLECTIONS,
   CollectionName,
@@ -16,7 +34,7 @@ import {
 } from "./server/database";
 
 // Connected SSE clients for real-time sync
-const sseClients = new Set<express.Response>();
+const sseClients = new Map<express.Response, UserRole>();
 
 interface SessionPayload {
   sub: string;
@@ -121,9 +139,29 @@ function sanitizeUser(user: StoredUser): User {
   return safeUser;
 }
 
+function sanitizeSaleForRole(sale: DailySale | undefined, role: UserRole): DailySale | undefined {
+  if (!sale || role !== 'vendedor') return sale;
+  return {
+    ...sale,
+    costTotal: undefined,
+    items: sale.items?.map(item => ({ ...item, unitCost: 0 })),
+  };
+}
+
 function broadcastSyncEvent(eventType: string, payload: any) {
-  const data = JSON.stringify({ type: eventType, payload, timestamp: new Date().toISOString() });
-  sseClients.forEach((client) => {
+  sseClients.forEach((role, client) => {
+    let safePayload = payload;
+    if (role === 'vendedor' && eventType === 'DATA_UPSERTED') {
+      if (['suppliers', 'inventory_movements', 'product_batches'].includes(payload.collection)) return;
+      if (payload.collection === 'product_prices') {
+        const { cost: _cost, ...record } = payload.record;
+        safePayload = { ...payload, record };
+      }
+    }
+    if (role === 'vendedor' && (eventType === 'SALE_RECORDED' || eventType === 'SALE_DELETED')) {
+      safePayload = { ...payload, sale: sanitizeSaleForRole(payload.sale, role), movements: [] };
+    }
+    const data = JSON.stringify({ type: eventType, payload: safePayload, timestamp: new Date().toISOString() });
     client.write(`data: ${data}\n\n`);
   });
 }
@@ -250,17 +288,53 @@ async function startServer() {
   });
 
   app.get("/api/bootstrap", asyncRoute(async (_req, res) => {
+    const session = res.locals.session as SessionPayload;
+    const currentUser = await findRecord<User>('users', session.sub);
     const entries = await Promise.all(
       COLLECTIONS.map(async (collection) => {
-        const records = await listRecords(collection);
-        return [collection, collection === 'users' ? (records as User[]).map(sanitizeUser) : records] as const;
+        let records = await listRecords(collection);
+        if (collection === 'users') records = (records as User[]).map(sanitizeUser);
+        if (currentUser?.role === 'vendedor') {
+          if (collection === 'product_prices') {
+            records = (records as ProductPrice[]).map(({ cost: _cost, ...price }) => price);
+          }
+          if (collection === 'suppliers' || collection === 'inventory_movements' || collection === 'product_batches') {
+            records = [];
+          }
+          if (collection === 'daily_sales') {
+            records = (records as DailySale[]).map(sale => sanitizeSaleForRole(sale, currentUser.role)!);
+          }
+        }
+        return [collection, records] as const;
       }),
     );
     const state = Object.fromEntries(entries);
-    const session = res.locals.session as SessionPayload;
-    const currentUser = await findRecord<User>('users', session.sub);
     res.json({ ...state, currentUser: currentUser ? sanitizeUser(currentUser) : null });
   }));
+
+  const productWriteCollections: CollectionName[] = [
+    'product_categories', 'products', 'product_variants', 'product_prices',
+    'suppliers', 'inventory', 'inventory_movements', 'product_batches', 'daily_sales',
+  ];
+
+  const requireAdminForProductWrite = async (collection: CollectionName, res: express.Response) => {
+    if (!productWriteCollections.includes(collection)) return true;
+    const session = res.locals.session as SessionPayload;
+    const actor = await findRecord<User>('users', session.sub);
+    if (actor?.role === 'admin') return true;
+    res.status(403).json({ error: 'Solo un Administrador puede modificar catálogo e inventario.' });
+    return false;
+  };
+
+  const getAdminActor = async (res: express.Response) => {
+    const session = res.locals.session as SessionPayload;
+    const actor = await findRecord<User>('users', session.sub);
+    if (!actor || actor.role !== 'admin') {
+      res.status(403).json({ error: 'Solo un Administrador puede realizar esta operación.' });
+      return null;
+    }
+    return actor;
+  };
 
   // Persistencia común para módulos que no necesitan lógica adicional.
   app.put("/api/data/:collection/:id", asyncRoute(async (req, res) => {
@@ -268,6 +342,7 @@ async function startServer() {
     if (!COLLECTIONS.includes(collection)) {
       return res.status(404).json({ error: 'Colección no encontrada' });
     }
+    if (!(await requireAdminForProductWrite(collection, res))) return;
     let record = { ...req.body, id: req.params.id };
     if (collection === 'users') {
       const existing = await findRecord<StoredUser>('users', req.params.id);
@@ -289,13 +364,339 @@ async function startServer() {
     if (!COLLECTIONS.includes(collection)) {
       return res.status(404).json({ error: 'Colección no encontrada' });
     }
+    if (!(await requireAdminForProductWrite(collection, res))) return;
     await deleteRecord(collection, req.params.id);
     broadcastSyncEvent('DATA_DELETED', { collection, id: req.params.id });
     res.json({ success: true, id: req.params.id });
   }));
 
+  app.post('/api/products/bundle', asyncRoute(async (req, res) => {
+    if (!(await getAdminActor(res))) return;
+    const product = req.body.product as Product;
+    const variant = req.body.variant as ProductVariant;
+    const price = req.body.price as ProductPrice;
+    if (!product?.id || !product.name?.trim() || !variant?.id || !variant.sku?.trim() || !price?.id) {
+      return res.status(400).json({ error: 'Nombre, SKU y precio son obligatorios.' });
+    }
+    if (Number(price.cost) < 0 || Number(price.salePrice) < 0) {
+      return res.status(400).json({ error: 'Los precios no pueden ser negativos.' });
+    }
+    const variants = await listRecords<ProductVariant>('product_variants');
+    const duplicate = variants.find(item => item.id !== variant.id && (
+      item.sku.toLowerCase() === variant.sku.toLowerCase()
+      || Boolean(variant.barcode && item.barcode === variant.barcode)
+    ));
+    if (duplicate) return res.status(409).json({ error: 'El SKU o código de barras ya está registrado.' });
+    await applyRecordTransaction([
+      { collection: 'products', record: product },
+      { collection: 'product_variants', record: variant },
+      { collection: 'product_prices', record: price },
+    ]);
+    broadcastSyncEvent('DATA_UPSERTED', { collection: 'products', record: product });
+    broadcastSyncEvent('DATA_UPSERTED', { collection: 'product_variants', record: variant });
+    broadcastSyncEvent('DATA_UPSERTED', { collection: 'product_prices', record: price });
+    res.status(201).json({ product, variant, price });
+  }));
+
+  app.post('/api/inventory/adjust', asyncRoute(async (req, res) => {
+    const actor = await getAdminActor(res);
+    if (!actor) return;
+    const requested = req.body.inventory as InventoryItem;
+    const quantityDelta = Number(req.body.quantityDelta);
+    const reason = String(req.body.reason || '').trim();
+    const type = (req.body.type || 'adjustment') as InventoryMovementType;
+    if (!requested?.storeId || !requested?.variantId || !Number.isFinite(quantityDelta) || !reason) {
+      return res.status(400).json({ error: 'Producto, tienda, cantidad y motivo son obligatorios.' });
+    }
+    const [store, variant, existingItems] = await Promise.all([
+      findRecord<Store>('stores', requested.storeId),
+      findRecord<ProductVariant>('product_variants', requested.variantId),
+      listRecords<InventoryItem>('inventory'),
+    ]);
+    if (!store?.active || !variant?.active) return res.status(400).json({ error: 'La tienda o el producto no están activos.' });
+    const product = await findRecord<Product>('products', variant.productId);
+    if (!product) return res.status(400).json({ error: 'Producto no encontrado.' });
+    const existing = existingItems.find(item => item.storeId === store.id && item.variantId === variant.id);
+    const previousQuantity = existing?.quantity || 0;
+    if (previousQuantity + quantityDelta < 0) return res.status(409).json({ error: `El ajuste dejaría el inventario negativo. Disponible: ${previousQuantity}.` });
+    const now = new Date().toISOString();
+    const record: InventoryItem = {
+      ...requested,
+      ...existing,
+      id: existing?.id || `${store.id}:${variant.id}`,
+      storeId: store.id, storeName: store.name, productId: product.id, variantId: variant.id,
+      sku: variant.sku, productName: product.name, quantity: previousQuantity + quantityDelta,
+      reservedQuantity: existing?.reservedQuantity || 0, updatedAt: now,
+    };
+    const movement: InventoryMovement = {
+      id: `mov-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+      inventoryId: record.id, storeId: store.id, storeName: store.name, productId: product.id,
+      variantId: variant.id, sku: variant.sku, productName: product.name, type,
+      quantity: quantityDelta, previousQuantity, newQuantity: record.quantity, reason,
+      userId: actor.id, userName: actor.name, timestamp: now,
+    };
+    await applyRecordTransaction([
+      { collection: 'inventory', record },
+      { collection: 'inventory_movements', record: movement },
+    ]);
+    broadcastSyncEvent('DATA_UPSERTED', { collection: 'inventory', record });
+    broadcastSyncEvent('DATA_UPSERTED', { collection: 'inventory_movements', record: movement });
+    res.status(201).json({ inventory: record, movement });
+  }));
+
+  app.post('/api/inventory/batches', asyncRoute(async (req, res) => {
+    const actor = await getAdminActor(res);
+    if (!actor) return;
+    const batch = req.body.batch as ProductBatch;
+    const requested = req.body.inventory as InventoryItem;
+    if (!batch?.lotNumber?.trim() || !batch.variantId || !batch.storeId || Number(batch.quantityReceived) <= 0) {
+      return res.status(400).json({ error: 'Lote, producto, tienda y cantidad recibida son obligatorios.' });
+    }
+    const duplicate = (await listRecords<ProductBatch>('product_batches')).find(item => item.id !== batch.id && item.productId === batch.productId && item.lotNumber.toLowerCase() === batch.lotNumber.toLowerCase());
+    if (duplicate) return res.status(409).json({ error: 'Este número de lote ya existe para el producto.' });
+    const [store, variant, product, existingItems] = await Promise.all([
+      findRecord<Store>('stores', batch.storeId),
+      findRecord<ProductVariant>('product_variants', batch.variantId),
+      findRecord<Product>('products', batch.productId),
+      listRecords<InventoryItem>('inventory'),
+    ]);
+    if (!store?.active || !variant?.active || !product || variant.productId !== product.id) {
+      return res.status(400).json({ error: 'La tienda o el producto del lote no son válidos.' });
+    }
+    const existing = existingItems.find(item => item.storeId === store.id && item.variantId === variant.id);
+    const previousQuantity = existing?.quantity || 0;
+    const now = new Date().toISOString();
+    const record: InventoryItem = {
+      ...requested, ...existing, id: existing?.id || `${store.id}:${variant.id}`,
+      storeId: store.id, storeName: store.name, productId: product.id, variantId: variant.id,
+      sku: variant.sku, productName: product.name, quantity: previousQuantity + Number(batch.quantityReceived),
+      reservedQuantity: existing?.reservedQuantity || 0, updatedAt: now,
+    };
+    const savedBatch: ProductBatch = { ...batch, productId: product.id, variantId: variant.id, storeId: store.id, quantityReceived: Number(batch.quantityReceived), remainingQuantity: Number(batch.quantityReceived), createdAt: batch.createdAt || now };
+    const movement: InventoryMovement = {
+      id: `mov-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`, inventoryId: record.id,
+      storeId: store.id, storeName: store.name, productId: product.id, variantId: variant.id,
+      sku: variant.sku, productName: product.name, type: 'entry', quantity: savedBatch.quantityReceived,
+      previousQuantity, newQuantity: record.quantity, reason: `Recepción de lote ${savedBatch.lotNumber}`,
+      referenceId: savedBatch.id, userId: actor.id, userName: actor.name, timestamp: now,
+    };
+    await applyRecordTransaction([
+      { collection: 'product_batches', record: savedBatch },
+      { collection: 'inventory', record },
+      { collection: 'inventory_movements', record: movement },
+    ]);
+    broadcastSyncEvent('DATA_UPSERTED', { collection: 'product_batches', record: savedBatch });
+    broadcastSyncEvent('DATA_UPSERTED', { collection: 'inventory', record });
+    broadcastSyncEvent('DATA_UPSERTED', { collection: 'inventory_movements', record: movement });
+    res.status(201).json({ batch: savedBatch, inventory: record, movement });
+  }));
+
+  const prepareSale = async (body: any, session: SessionPayload, existingSale?: DailySale) => {
+    const actor = await findRecord<User>('users', session.sub);
+    if (!actor) throw new Error('El usuario de la sesión ya no existe.');
+    if (actor.role === 'contador') throw new Error('El rol Contador solo puede consultar las ventas.');
+    if (existingSale && actor.role !== 'admin' && existingSale.sellerId !== actor.id) {
+      throw new Error('Solo puedes modificar tus propias ventas.');
+    }
+
+    const storeId = String(body.storeId || '');
+    if (!storeId) throw new Error('Selecciona una tienda para registrar la venta.');
+    const store = await findRecord<Store>('stores', storeId);
+    if (!store || !store.active) throw new Error('La tienda seleccionada no está activa.');
+    if (actor.role === 'vendedor' && !actor.storeIds?.includes(storeId) && !store.assignedSellerIds?.includes(actor.id)) {
+      throw new Error('No estás asignado a la tienda seleccionada.');
+    }
+
+    const seller = actor.role === 'admin' && body.sellerId
+      ? await findRecord<User>('users', String(body.sellerId)) || actor
+      : actor;
+    const products = await listRecords<Product>('products');
+    const variants = await listRecords<ProductVariant>('product_variants');
+    const prices = await listRecords<ProductPrice>('product_prices');
+    const inventory = await listRecords<InventoryItem>('inventory');
+    const inventoryMap = new Map(inventory.map(item => [item.id, { ...item }]));
+    const saleItems: SaleItem[] = [];
+    const changedInventory: InventoryItem[] = [];
+    const movements: InventoryMovement[] = [];
+
+    // En edición se restaura primero la venta anterior para recalcular sin duplicar descuentos.
+    for (const oldItem of existingSale?.items || []) {
+      const stock = inventory.find(item => item.storeId === existingSale?.storeId && item.variantId === oldItem.variantId);
+      if (stock) {
+        const restored = inventoryMap.get(stock.id)!;
+        restored.quantity += oldItem.quantity;
+        changedInventory.push(restored);
+      }
+    }
+
+    const saleId = existingSale?.id || body.id || `sale-${Date.now()}`;
+
+    for (const requested of Array.isArray(body.items) ? body.items : []) {
+      const variant = variants.find(item => item.id === requested.variantId && item.active);
+      if (!variant) throw new Error('Una variante seleccionada ya no está disponible.');
+      const product = products.find(item => item.id === variant.productId && item.status === 'active');
+      if (!product) throw new Error(`El producto ${variant.sku} no está activo.`);
+      const price = prices.find(item => item.variantId === variant.id && item.storeId === storeId)
+        || prices.find(item => item.variantId === variant.id && !item.storeId);
+      if (!price) throw new Error(`El producto ${variant.sku} no tiene precio configurado.`);
+
+      const quantity = Math.max(1, Math.floor(Number(requested.quantity) || 1));
+      const storedInventory = inventory.find(item => item.storeId === storeId && item.variantId === variant.id);
+      const stock = storedInventory ? inventoryMap.get(storedInventory.id) : undefined;
+      const inventoryId = stock?.id || `${storeId}:${variant.id}`;
+      const available = stock ? stock.quantity - stock.reservedQuantity : 0;
+      if (!stock || available < quantity) {
+        throw new Error(`Stock insuficiente para ${product.name}. Disponible: ${Math.max(0, available)}.`);
+      }
+
+      const previousQuantity = stock.quantity;
+      stock.quantity -= quantity;
+      stock.updatedAt = new Date().toISOString();
+      const lineBase = price.salePrice * quantity;
+      const discountAmount = Math.min(lineBase, Math.max(0, Number(requested.discountAmount) || 0));
+      const taxableAmount = lineBase - discountAmount;
+      const taxAmount = Math.round(taxableAmount * ((price.taxRate ?? product.taxRate) / 100));
+      saleItems.push({
+        productId: product.id,
+        variantId: variant.id,
+        productName: product.name,
+        variantName: variant.name,
+        sku: variant.sku,
+        quantity,
+        unitPrice: price.salePrice,
+        unitCost: price.cost,
+        discountAmount,
+        taxAmount,
+        subtotal: lineBase,
+      });
+      if (!changedInventory.some(item => item.id === stock.id)) changedInventory.push(stock);
+      movements.push({
+        id: `mov-${Date.now()}-${movements.length}`,
+        inventoryId,
+        storeId,
+        storeName: stock.storeName,
+        productId: product.id,
+        variantId: variant.id,
+        sku: variant.sku,
+        productName: product.name,
+        type: 'sale',
+        quantity: -quantity,
+        previousQuantity,
+        newQuantity: stock.quantity,
+        reason: existingSale ? 'Actualización de venta' : 'Venta registrada',
+        referenceId: saleId,
+        userId: actor.id,
+        userName: actor.name,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const subtotal = saleItems.reduce((sum, item) => sum + item.subtotal, 0);
+    const discountAmount = saleItems.reduce((sum, item) => sum + item.discountAmount, 0);
+    const taxAmount = saleItems.reduce((sum, item) => sum + item.taxAmount, 0);
+    const amount = saleItems.length ? subtotal - discountAmount + taxAmount : Number(body.amount) || 0;
+    if (amount <= 0) throw new Error('La venta debe tener un valor mayor a cero.');
+
+    const sale: DailySale = {
+      ...existingSale,
+      id: saleId,
+      sellerId: seller.id,
+      sellerName: seller.name,
+      storeId,
+      storeName: store.name,
+      date: body.date || new Date().toISOString().slice(0, 10),
+      amount,
+      channel: body.channel || 'tienda',
+      clientName: body.clientName,
+      description: body.description,
+      timestamp: existingSale?.timestamp || new Date().toISOString(),
+      items: saleItems,
+      subtotal,
+      discountAmount,
+      taxAmount,
+      costTotal: saleItems.reduce((sum, item) => sum + item.unitCost * item.quantity, 0),
+    };
+
+    return { sale, inventory: changedInventory, movements };
+  };
+
+  app.post('/api/sales', asyncRoute(async (req, res) => {
+    const session = res.locals.session as SessionPayload;
+    const result = await prepareSale(req.body, session);
+    await applyRecordTransaction([
+      { collection: 'daily_sales', record: result.sale },
+      ...result.inventory.map(record => ({ collection: 'inventory' as const, record })),
+      ...result.movements.map(record => ({ collection: 'inventory_movements' as const, record })),
+    ]);
+    broadcastSyncEvent('SALE_RECORDED', result);
+    const actor = await findRecord<User>('users', session.sub);
+    res.status(201).json(actor?.role === 'vendedor' ? { ...result, sale: sanitizeSaleForRole(result.sale, actor.role), movements: [] } : result);
+  }));
+
+  app.put('/api/sales/:id', asyncRoute(async (req, res) => {
+    const existing = await findRecord<DailySale>('daily_sales', req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Venta no encontrada.' });
+    const session = res.locals.session as SessionPayload;
+    const result = await prepareSale({ ...req.body, id: existing.id }, session, existing);
+    await applyRecordTransaction([
+      { collection: 'daily_sales', record: result.sale },
+      ...result.inventory.map(record => ({ collection: 'inventory' as const, record })),
+      ...result.movements.map(record => ({ collection: 'inventory_movements' as const, record })),
+    ]);
+    broadcastSyncEvent('SALE_RECORDED', result);
+    const actor = await findRecord<User>('users', session.sub);
+    res.json(actor?.role === 'vendedor' ? { ...result, sale: sanitizeSaleForRole(result.sale, actor.role), movements: [] } : result);
+  }));
+
+  app.delete('/api/sales/:id', asyncRoute(async (req, res) => {
+    const sale = await findRecord<DailySale>('daily_sales', req.params.id);
+    if (!sale) return res.status(404).json({ error: 'Venta no encontrada.' });
+    const session = res.locals.session as SessionPayload;
+    const actor = await findRecord<User>('users', session.sub);
+    if (!actor || actor.role === 'contador') return res.status(403).json({ error: 'No tienes permiso para eliminar ventas.' });
+    if (actor.role !== 'admin' && sale.sellerId !== actor.id) return res.status(403).json({ error: 'Solo puedes eliminar tus propias ventas.' });
+    const inventory = await listRecords<InventoryItem>('inventory');
+    const restored: InventoryItem[] = [];
+    const movements: InventoryMovement[] = [];
+    for (const item of sale.items || []) {
+      const stock = inventory.find(record => record.storeId === sale.storeId && record.variantId === item.variantId);
+      if (!stock) continue;
+      const inventoryId = stock.id;
+      const updated = { ...stock, quantity: stock.quantity + item.quantity, updatedAt: new Date().toISOString() };
+      restored.push(updated);
+      movements.push({
+        id: `mov-${Date.now()}-${movements.length}`,
+        inventoryId,
+        storeId: updated.storeId,
+        storeName: updated.storeName,
+        productId: item.productId,
+        variantId: item.variantId,
+        sku: item.sku,
+        productName: item.productName,
+        type: 'return',
+        quantity: item.quantity,
+        previousQuantity: stock.quantity,
+        newQuantity: updated.quantity,
+        reason: 'Venta eliminada; inventario restaurado',
+        referenceId: sale.id,
+        userId: actor?.id || session.sub,
+        userName: actor?.name || session.email,
+        timestamp: new Date().toISOString(),
+      });
+    }
+    await applyRecordTransaction([
+      ...restored.map(record => ({ collection: 'inventory' as const, record })),
+      ...movements.map(record => ({ collection: 'inventory_movements' as const, record })),
+    ], [{ collection: 'daily_sales', id: sale.id }]);
+    broadcastSyncEvent('SALE_DELETED', { id: sale.id, inventory: restored, movements });
+    res.json({ success: true, id: sale.id, inventory: restored, movements: actor.role === 'vendedor' ? [] : movements });
+  }));
+
   // 2. Real-time Synchronization SSE Stream
-  app.get("/api/sync", (req, res) => {
+  app.get("/api/sync", asyncRoute(async (req, res) => {
+    const session = res.locals.session as SessionPayload;
+    const actor = await findRecord<User>('users', session.sub);
+    if (!actor) return res.status(401).json({ error: 'El usuario de la sesión ya no existe.' });
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
@@ -308,13 +709,13 @@ async function startServer() {
       res.write(': keepalive\n\n');
     }, 25000);
 
-    sseClients.add(res);
+    sseClients.set(res, actor.role);
 
     req.on("close", () => {
       clearInterval(heartbeat);
       sseClients.delete(res);
     });
-  });
+  }));
 
   // 3. User Endpoints
   app.get("/api/users", asyncRoute(async (_req, res) => {

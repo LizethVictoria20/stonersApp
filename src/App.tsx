@@ -16,6 +16,7 @@ import { ExportEngineView } from './components/ExportEngine/ExportEngineView';
 import { SupabaseGuide } from './components/SupabaseGuide';
 import { SalesManager } from './components/SalesTracker/SalesManager';
 import { StoreList } from './components/StoreManager/StoreList';
+import { ProductManager } from './components/ProductManager/ProductManager';
 import { LoginPage } from './components/LoginPage';
 import { GmailInboxModal } from './components/GmailInboxModal';
 import { AIOpsAssistantModal } from './components/AIOpsAssistantModal';
@@ -77,7 +78,7 @@ function MainAppContent() {
       {/* Top Navbar */}
       <Navbar 
         onOpenLoginModal={() => navigate('/login')}
-        onOpenAIModal={(prompt) => handleOpenAI(prompt)}
+        onOpenAIModal={handleOpenAI}
         onOpenGmailModal={() => setIsGmailOpen(true)}
       />
 
@@ -85,7 +86,7 @@ function MainAppContent() {
       <div className="mx-auto flex max-w-7xl flex-col lg:flex-row min-h-[calc(100vh-4rem)]">
         
         {/* Sidebar Navigation */}
-        <Sidebar onOpenAIModal={(prompt) => handleOpenAI(prompt)} />
+        <Sidebar onOpenAIModal={handleOpenAI} />
 
         {/* Dynamic Workspace Area */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-x-hidden">
@@ -105,6 +106,12 @@ function MainAppContent() {
           {currentTab === 'stores' && (
             <div className="animate-in fade-in">
               <StoreList />
+            </div>
+          )}
+
+          {currentTab === 'products' && (
+            <div className="animate-in fade-in">
+              <ProductManager />
             </div>
           )}
 
