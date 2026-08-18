@@ -78,10 +78,13 @@ function verifySession(token: string): SessionPayload | null {
 }
 
 async function verifyFirebaseIdToken(idToken: string): Promise<{ email: string; name: string; avatar: string; uid: string }> {
-  const apiKey = (
-    process.env.FIREBASE_API_KEY ||
-    (process.env.NODE_ENV !== 'production' ? process.env.VITE_FIREBASE_API_KEY : '')
-  )?.trim();
+  const serverApiKey = process.env.FIREBASE_API_KEY?.trim();
+  const frontendApiKey = process.env.VITE_FIREBASE_API_KEY?.trim();
+  // En desarrollo el token nace en el SDK web, por lo que debe validarse con
+  // la misma clave usada por Vite. En Render se exige la variable del servidor.
+  const apiKey = process.env.NODE_ENV === 'production'
+    ? serverApiKey
+    : frontendApiKey || serverApiKey;
   if (!apiKey) {
     throw new Error(
       process.env.NODE_ENV === 'production'
@@ -98,7 +101,9 @@ async function verifyFirebaseIdToken(idToken: string): Promise<{ email: string; 
   const body = await response.json() as any;
   const firebaseUser = body.users?.[0];
   if (!response.ok || !firebaseUser?.email || firebaseUser.emailVerified === false) {
-    throw new Error('El token de Google/Firebase no es válido.');
+    const firebaseError = String(body.error?.message || 'INVALID_ID_TOKEN');
+    console.error(`Firebase rechazó el token: ${firebaseError}`);
+    throw new Error(`El token de Google/Firebase no es válido (${firebaseError}).`);
   }
 
   return {
@@ -218,18 +223,14 @@ async function startServer() {
   // 1. API Health Check
   app.get("/api/health", asyncRoute(async (_req, res) => {
     const database = await checkDatabase();
-    const status = database.connected || (!database.configured && process.env.NODE_ENV !== 'production')
-      ? 'ok'
-      : 'degraded';
+    const status = database.connected ? 'ok' : 'degraded';
 
     res.status(status === 'ok' ? 200 : 503).json({
       status,
       system: "Stoners Colombia - Control Operativo",
       timestamp: new Date().toISOString(),
       database: {
-        provider: database.configured
-          ? 'supabase-postgresql'
-          : process.env.NODE_ENV === 'production' ? 'not-configured' : 'memory-development',
+        provider: database.configured ? 'supabase-postgresql' : 'not-configured',
         connected: database.connected,
         error: database.error,
       },

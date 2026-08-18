@@ -156,17 +156,23 @@ const clearLegacyDemoData = () => {
   localStorage.setItem('stoners_data_version', CLEAN_DATA_VERSION);
 };
 
+const reportPersistenceError = (action: string, error: unknown) => {
+  const message = error instanceof Error ? error.message : 'Error desconocido';
+  console.error(`${action}:`, error);
+  window.alert(`${action}. El cambio no quedó guardado en Supabase.\n\n${message}`);
+};
+
 const persistRecord = <T extends { id: string }>(collection: PersistedCollection, record: T) => {
   void apiRequest(`/api/data/${collection}/${encodeURIComponent(record.id)}`, {
     method: 'PUT',
     body: JSON.stringify(record),
-  }).catch((error) => console.warn(`No se pudo sincronizar ${collection}:`, error));
+  }).catch((error) => reportPersistenceError(`No se pudo guardar ${collection}`, error));
 };
 
 const removeRecord = (collection: PersistedCollection, id: string) => {
   void apiRequest(`/api/data/${collection}/${encodeURIComponent(id)}`, {
     method: 'DELETE',
-  }).catch((error) => console.warn(`No se pudo eliminar ${collection}:`, error));
+  }).catch((error) => reportPersistenceError(`No se pudo eliminar ${collection}`, error));
 };
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -557,7 +563,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     apiRequest<Task>('/api/tasks', {
       method: 'POST',
       body: JSON.stringify(newTask)
-    }).catch(e => console.warn('Server sync error', e));
+    }).catch(error => reportPersistenceError('No se pudo guardar la tarea', error));
   };
 
   const updateTask = (taskId: string, updates: Partial<Task>) => {
@@ -586,7 +592,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     apiRequest<Task>(`/api/tasks/${taskId}`, {
       method: 'PUT',
       body: JSON.stringify(updates)
-    }).catch(e => console.warn('Server sync error', e));
+    }).catch(error => reportPersistenceError('No se pudo actualizar la tarea', error));
   };
 
   const deleteTask = (taskId: string) => {
@@ -598,7 +604,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     apiRequest<{ success: boolean }>(`/api/tasks/${taskId}`, {
       method: 'DELETE'
-    }).catch(e => console.warn('Server sync error', e));
+    }).catch(error => reportPersistenceError('No se pudo eliminar la tarea', error));
   };
 
   const toggleSubtask = (taskId: string, subtaskId: string) => {
@@ -639,7 +645,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     void apiRequest<User>('/api/users', {
       method: 'POST',
       body: JSON.stringify(newUser),
-    }).catch(error => console.warn('No se pudo sincronizar el usuario:', error));
+    }).catch(error => reportPersistenceError('No se pudo guardar el usuario', error));
     logActivity('Usuario Creado', `Registró al colaborador ${newUser.name} como ${newUser.role}`, newUser.department);
   };
 
@@ -656,7 +662,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     void apiRequest<SOPProcedure>('/api/sops', {
       method: 'POST',
       body: JSON.stringify(newSOP),
-    }).catch(error => console.warn('No se pudo sincronizar el SOP:', error));
+    }).catch(error => reportPersistenceError('No se pudo guardar el SOP', error));
     logActivity('Nuevo SOP Publicado', `Publicó el manual ${newSOP.code}: ${newSOP.title}`, newSOP.department);
   };
 

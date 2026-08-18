@@ -22,9 +22,20 @@ export const COLLECTIONS = [
 
 export type CollectionName = (typeof COLLECTIONS)[number];
 
-const memoryStore = new Map<CollectionName, Map<string, Record<string, unknown>>>(
-  COLLECTIONS.map((collection) => [collection, new Map()]),
-);
+type UserDocument = {
+  id: string;
+  email: string;
+  name?: string;
+  role?: string;
+  department?: string;
+  avatar?: string;
+  productivityScore?: number;
+  tasksCompletedThisMonth?: number;
+  lastActive?: string;
+  phone?: string;
+  pinHash?: string;
+  storeIds?: string[];
+};
 
 let client: SupabaseClient | null | undefined;
 
@@ -45,27 +56,74 @@ function getClient(): SupabaseClient | null {
   return client;
 }
 
-function assertDevelopmentFallback(): void {
-  if (process.env.NODE_ENV === 'production') {
-    throw new Error('PostgreSQL no está configurado. Define SUPABASE_URL y SUPABASE_SECRET_KEY en Render.');
+function requireClient(): SupabaseClient {
+  const supabase = getClient();
+  if (!supabase) {
+    throw new Error(
+      'Supabase no está configurado. Define SUPABASE_URL y SUPABASE_SECRET_KEY antes de usar la aplicación.',
+    );
   }
+  return supabase;
+}
+
+function userFromRow(row: any): UserDocument {
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    role: row.role,
+    department: row.department,
+    avatar: row.avatar,
+    productivityScore: row.productivity_score,
+    tasksCompletedThisMonth: row.tasks_completed_this_month,
+    lastActive: row.last_active,
+    phone: row.phone || undefined,
+    pinHash: row.pin_hash || undefined,
+    storeIds: Array.isArray(row.store_ids) ? row.store_ids : [],
+  };
+}
+
+function userToRow(record: UserDocument) {
+  return {
+    id: record.id,
+    email: record.email.trim().toLowerCase(),
+    name: record.name || record.email.split('@')[0],
+    role: record.role || 'vendedor',
+    department: record.department || 'sales',
+    avatar: record.avatar || '',
+    productivity_score: Number(record.productivityScore ?? 100),
+    tasks_completed_this_month: Number(record.tasksCompletedThisMonth ?? 0),
+    last_active: record.lastActive || 'Ahora mismo',
+    phone: record.phone || null,
+    pin_hash: record.pinHash || null,
+    store_ids: record.storeIds || [],
+  };
 }
 
 export async function checkDatabase(): Promise<{ configured: boolean; connected: boolean; error?: string }> {
   const supabase = getClient();
   if (!supabase) return { configured: false, connected: false };
 
-  const { error } = await supabase.from('app_records').select('entity_id').limit(1);
+  const [{ error: recordsError }, { error: usersError }] = await Promise.all([
+    supabase.from('app_records').select('entity_id').limit(1),
+    supabase.from('users').select('id').limit(1),
+  ]);
+  const error = recordsError || usersError;
   return error
     ? { configured: true, connected: false, error: error.message }
     : { configured: true, connected: true };
 }
 
 export async function listRecords<T>(collection: CollectionName): Promise<T[]> {
-  const supabase = getClient();
-  if (!supabase) {
-    assertDevelopmentFallback();
-    return Array.from(memoryStore.get(collection)!.values()) as T[];
+  const supabase = requireClient();
+
+  if (collection === 'users') {
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) throw new Error(`No se pudo leer users: ${error.message}`);
+    return (data || []).map(userFromRow) as T[];
   }
 
   const { data, error } = await supabase
@@ -79,10 +137,13 @@ export async function listRecords<T>(collection: CollectionName): Promise<T[]> {
 }
 
 export async function upsertRecord<T extends { id: string }>(collection: CollectionName, record: T): Promise<T> {
-  const supabase = getClient();
-  if (!supabase) {
-    assertDevelopmentFallback();
-    memoryStore.get(collection)!.set(record.id, record as unknown as Record<string, unknown>);
+  const supabase = requireClient();
+
+  if (collection === 'users') {
+    const user = record as T & UserDocument;
+    if (!user.email?.trim()) throw new Error('No se puede guardar un usuario sin correo electrónico.');
+    const { error } = await supabase.from('users').upsert(userToRow(user), { onConflict: 'id' });
+    if (error) throw new Error(`No se pudo guardar users: ${error.message}`);
     return record;
   }
 
@@ -100,10 +161,11 @@ export async function upsertRecord<T extends { id: string }>(collection: Collect
 }
 
 export async function deleteRecord(collection: CollectionName, id: string): Promise<void> {
-  const supabase = getClient();
-  if (!supabase) {
-    assertDevelopmentFallback();
-    memoryStore.get(collection)!.delete(id);
+  const supabase = requireClient();
+
+  if (collection === 'users') {
+    const { error } = await supabase.from('users').delete().eq('id', id);
+    if (error) throw new Error(`No se pudo eliminar users: ${error.message}`);
     return;
   }
 
@@ -134,13 +196,7 @@ export async function applyRecordTransaction(
   upserts: Array<{ collection: CollectionName; record: { id: string } }>,
   deletes: Array<{ collection: CollectionName; id: string }> = [],
 ): Promise<void> {
-  const supabase = getClient();
-  if (!supabase) {
-    assertDevelopmentFallback();
-    upserts.forEach(({ collection, record }) => memoryStore.get(collection)!.set(record.id, record));
-    deletes.forEach(({ collection, id }) => memoryStore.get(collection)!.delete(id));
-    return;
-  }
+  const supabase = requireClient();
 
   const { error } = await supabase.rpc('apply_app_records_transaction', {
     p_upserts: upserts.map(({ collection, record }) => ({

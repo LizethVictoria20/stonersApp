@@ -49,9 +49,6 @@ var COLLECTIONS = [
   "inventory_movements",
   "product_batches"
 ];
-var memoryStore = new Map(
-  COLLECTIONS.map((collection) => [collection, /* @__PURE__ */ new Map()])
-);
 var client;
 function getClient() {
   if (client !== void 0) return client;
@@ -62,32 +59,75 @@ function getClient() {
   }) : null;
   return client;
 }
-function assertDevelopmentFallback() {
-  if (process.env.NODE_ENV === "production") {
-    throw new Error("PostgreSQL no est\xE1 configurado. Define SUPABASE_URL y SUPABASE_SECRET_KEY en Render.");
+function requireClient() {
+  const supabase = getClient();
+  if (!supabase) {
+    throw new Error(
+      "Supabase no est\xE1 configurado. Define SUPABASE_URL y SUPABASE_SECRET_KEY antes de usar la aplicaci\xF3n."
+    );
   }
+  return supabase;
+}
+function userFromRow(row) {
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    role: row.role,
+    department: row.department,
+    avatar: row.avatar,
+    productivityScore: row.productivity_score,
+    tasksCompletedThisMonth: row.tasks_completed_this_month,
+    lastActive: row.last_active,
+    phone: row.phone || void 0,
+    pinHash: row.pin_hash || void 0,
+    storeIds: Array.isArray(row.store_ids) ? row.store_ids : []
+  };
+}
+function userToRow(record) {
+  return {
+    id: record.id,
+    email: record.email.trim().toLowerCase(),
+    name: record.name || record.email.split("@")[0],
+    role: record.role || "vendedor",
+    department: record.department || "sales",
+    avatar: record.avatar || "",
+    productivity_score: Number(record.productivityScore ?? 100),
+    tasks_completed_this_month: Number(record.tasksCompletedThisMonth ?? 0),
+    last_active: record.lastActive || "Ahora mismo",
+    phone: record.phone || null,
+    pin_hash: record.pinHash || null,
+    store_ids: record.storeIds || []
+  };
 }
 async function checkDatabase() {
   const supabase = getClient();
   if (!supabase) return { configured: false, connected: false };
-  const { error } = await supabase.from("app_records").select("entity_id").limit(1);
+  const [{ error: recordsError }, { error: usersError }] = await Promise.all([
+    supabase.from("app_records").select("entity_id").limit(1),
+    supabase.from("users").select("id").limit(1)
+  ]);
+  const error = recordsError || usersError;
   return error ? { configured: true, connected: false, error: error.message } : { configured: true, connected: true };
 }
 async function listRecords(collection) {
-  const supabase = getClient();
-  if (!supabase) {
-    assertDevelopmentFallback();
-    return Array.from(memoryStore.get(collection).values());
+  const supabase = requireClient();
+  if (collection === "users") {
+    const { data: data2, error: error2 } = await supabase.from("users").select("*").order("created_at", { ascending: false });
+    if (error2) throw new Error(`No se pudo leer users: ${error2.message}`);
+    return (data2 || []).map(userFromRow);
   }
   const { data, error } = await supabase.from("app_records").select("payload").eq("entity_type", collection).order("created_at", { ascending: false });
   if (error) throw new Error(`No se pudo leer ${collection}: ${error.message}`);
   return (data || []).map((record) => record.payload);
 }
 async function upsertRecord(collection, record) {
-  const supabase = getClient();
-  if (!supabase) {
-    assertDevelopmentFallback();
-    memoryStore.get(collection).set(record.id, record);
+  const supabase = requireClient();
+  if (collection === "users") {
+    const user = record;
+    if (!user.email?.trim()) throw new Error("No se puede guardar un usuario sin correo electr\xF3nico.");
+    const { error: error2 } = await supabase.from("users").upsert(userToRow(user), { onConflict: "id" });
+    if (error2) throw new Error(`No se pudo guardar users: ${error2.message}`);
     return record;
   }
   const { error } = await supabase.from("app_records").upsert(
@@ -102,10 +142,10 @@ async function upsertRecord(collection, record) {
   return record;
 }
 async function deleteRecord(collection, id) {
-  const supabase = getClient();
-  if (!supabase) {
-    assertDevelopmentFallback();
-    memoryStore.get(collection).delete(id);
+  const supabase = requireClient();
+  if (collection === "users") {
+    const { error: error2 } = await supabase.from("users").delete().eq("id", id);
+    if (error2) throw new Error(`No se pudo eliminar users: ${error2.message}`);
     return;
   }
   const { error } = await supabase.from("app_records").delete().eq("entity_type", collection).eq("entity_id", id);
@@ -120,13 +160,7 @@ async function findRecordByField(collection, field, value) {
   return records.find((record) => record[field] === value) || null;
 }
 async function applyRecordTransaction(upserts, deletes = []) {
-  const supabase = getClient();
-  if (!supabase) {
-    assertDevelopmentFallback();
-    upserts.forEach(({ collection, record }) => memoryStore.get(collection).set(record.id, record));
-    deletes.forEach(({ collection, id }) => memoryStore.get(collection).delete(id));
-    return;
-  }
+  const supabase = requireClient();
   const { error } = await supabase.rpc("apply_app_records_transaction", {
     p_upserts: upserts.map(({ collection, record }) => ({
       entity_type: collection,
@@ -170,7 +204,9 @@ function verifySession(token) {
   }
 }
 async function verifyFirebaseIdToken(idToken) {
-  const apiKey = (process.env.FIREBASE_API_KEY || (process.env.NODE_ENV !== "production" ? process.env.VITE_FIREBASE_API_KEY : ""))?.trim();
+  const serverApiKey = process.env.FIREBASE_API_KEY?.trim();
+  const frontendApiKey = process.env.VITE_FIREBASE_API_KEY?.trim();
+  const apiKey = process.env.NODE_ENV === "production" ? serverApiKey : frontendApiKey || serverApiKey;
   if (!apiKey) {
     throw new Error(
       process.env.NODE_ENV === "production" ? "FIREBASE_API_KEY no est\xE1 configurado en Render." : "Falta VITE_FIREBASE_API_KEY o FIREBASE_API_KEY en el archivo .env local."
@@ -184,7 +220,9 @@ async function verifyFirebaseIdToken(idToken) {
   const body = await response.json();
   const firebaseUser = body.users?.[0];
   if (!response.ok || !firebaseUser?.email || firebaseUser.emailVerified === false) {
-    throw new Error("El token de Google/Firebase no es v\xE1lido.");
+    const firebaseError = String(body.error?.message || "INVALID_ID_TOKEN");
+    console.error(`Firebase rechaz\xF3 el token: ${firebaseError}`);
+    throw new Error(`El token de Google/Firebase no es v\xE1lido (${firebaseError}).`);
   }
   return {
     email: String(firebaseUser.email).toLowerCase(),
@@ -285,13 +323,13 @@ async function startServer() {
   };
   app.get("/api/health", asyncRoute(async (_req, res) => {
     const database = await checkDatabase();
-    const status = database.connected || !database.configured && process.env.NODE_ENV !== "production" ? "ok" : "degraded";
+    const status = database.connected ? "ok" : "degraded";
     res.status(status === "ok" ? 200 : 503).json({
       status,
       system: "Stoners Colombia - Control Operativo",
       timestamp: (/* @__PURE__ */ new Date()).toISOString(),
       database: {
-        provider: database.configured ? "supabase-postgresql" : process.env.NODE_ENV === "production" ? "not-configured" : "memory-development",
+        provider: database.configured ? "supabase-postgresql" : "not-configured",
         connected: database.connected,
         error: database.error
       }

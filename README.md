@@ -16,7 +16,7 @@ Supabase (PostgreSQL)
 2. Ejecuta `npm ci`.
 3. Ejecuta `npm run dev`.
 
-Si `SUPABASE_URL` y `SUPABASE_SECRET_KEY` están vacías, Express usa memoria solamente en desarrollo. En producción, `/api/health` devuelve estado degradado hasta que PostgreSQL esté configurado.
+`SUPABASE_URL` y `SUPABASE_SECRET_KEY` son obligatorias también en desarrollo. La aplicación no utiliza almacenamiento temporal en memoria: si Supabase no está configurado o no responde, `/api/health` devuelve estado degradado y la API rechaza lecturas y escrituras para evitar datos que desaparezcan al reiniciar.
 
 ## Preparar Supabase
 
@@ -28,6 +28,16 @@ Si `SUPABASE_URL` y `SUPABASE_SECRET_KEY` están vacías, Express usa memoria so
 La clave secreta es exclusiva del backend. Nunca debe guardarse en variables `VITE_*`, GitHub Pages, código fuente o `localStorage`.
 
 Si el proyecto de Supabase ya existía, vuelve a ejecutar `supabase/schema.sql`: el script amplía la restricción de colecciones y crea la función transaccional usada por ventas e inventario, sin borrar los registros existentes.
+
+### Migración de usuarios
+
+Los perfiles de usuario se guardan en `public.users`; ya no se almacenan como documentos dentro de `app_records`. Para una instalación existente ejecuta en **SQL Editor**:
+
+```text
+supabase/migrations/20260818_create_users_table.sql
+```
+
+La migración copia los usuarios existentes, conserva roles, tiendas y hashes de PIN, elimina únicamente los documentos de usuario ya migrados desde `app_records` y puede ejecutarse nuevamente de forma segura. Los usuarios autenticados con Google siguen utilizando Firebase como proveedor de identidad, pero su perfil operativo queda en `public.users`.
 
 ## Catálogo, inventario y ventas
 
