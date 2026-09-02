@@ -561,7 +561,9 @@ async function startServer() {
       const inventoryId = stock?.id || `${storeId}:${variant.id}`;
       const available = stock ? stock.quantity - stock.reservedQuantity : 0;
       if (!stock || available < quantity) {
-        throw new Error(`Stock insuficiente para ${product.name}. Disponible: ${Math.max(0, available)}.`);
+        throw new Error(actor.role === 'vendedor'
+          ? `Stock insuficiente para ${product.name}. Reduce la cantidad solicitada.`
+          : `Stock insuficiente para ${product.name}. Disponible: ${Math.max(0, available)}.`);
       }
 
       const previousQuantity = stock.quantity;

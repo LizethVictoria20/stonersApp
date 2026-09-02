@@ -37,6 +37,7 @@ export const ProductManager: React.FC = () => {
   } = useApp();
   const isAdmin = currentUser.role === 'admin';
   const canSeeCosts = currentUser.role === 'admin' || currentUser.role === 'contador';
+  const canSeeStockQuantity = currentUser.role !== 'vendedor';
   const [view, setView] = useState<View>('catalog');
   const [search, setSearch] = useState('');
   const [productOpen, setProductOpen] = useState(false);
@@ -67,6 +68,10 @@ export const ProductManager: React.FC = () => {
     const availableIds = new Set(products.map(item => item.id));
     setSelectedProductIds(current => current.filter(id => availableIds.has(id)));
   }, [products]);
+
+  useEffect(() => {
+    if (!canSeeStockQuantity && view !== 'catalog') setView('catalog');
+  }, [canSeeStockQuantity, view]);
 
   const toggleProductSelection = (productId: string) => {
     setSelectedProductIds(current => current.includes(productId)
@@ -228,6 +233,15 @@ export const ProductManager: React.FC = () => {
     { id: 'movements', label: 'Movimientos', icon: History, admin: true },
   ];
 
+  const summaryCards: Array<[string, string | number, string]> = [
+    ['Productos activos', products.filter(item => item.status === 'active').length, 'text-emerald-600'],
+    ...(canSeeStockQuantity ? [
+      ['Unidades disponibles', inventory.reduce((sum, item) => sum + item.quantity - item.reservedQuantity, 0), 'text-teal-600'] as [string, number, string],
+      ['Stock bajo', lowStock.length, lowStock.length ? 'text-amber-600' : 'text-slate-600'] as [string, number, string],
+    ] : []),
+    ['Valor inventario', canSeeCosts ? money(inventory.reduce((sum, item) => sum + item.quantity * (pricesByVariant.get(item.variantId)?.cost || 0), 0)) : 'Restringido', 'text-indigo-600'],
+  ];
+
   return (
     <div className="space-y-5">
       <div className="flex flex-col gap-4 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900/60 sm:flex-row sm:items-center sm:justify-between">
@@ -244,16 +258,11 @@ export const ProductManager: React.FC = () => {
       </div>
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {[
-          ['Productos activos', products.filter(item => item.status === 'active').length, 'text-emerald-600'],
-          ['Unidades disponibles', inventory.reduce((sum, item) => sum + item.quantity - item.reservedQuantity, 0), 'text-teal-600'],
-          ['Stock bajo', lowStock.length, lowStock.length ? 'text-amber-600' : 'text-slate-600'],
-          ['Valor inventario', canSeeCosts ? money(inventory.reduce((sum, item) => sum + item.quantity * (pricesByVariant.get(item.variantId)?.cost || 0), 0)) : 'Restringido', 'text-indigo-600'],
-        ].map(([label, value, color]) => <div key={String(label)} className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900/60"><p className="text-[10px] font-bold uppercase text-slate-400">{label}</p><p className={`mt-1 text-xl font-black ${color}`}>{value}</p></div>)}
+        {summaryCards.map(([label, value, color]) => <div key={label} className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900/60"><p className="text-[10px] font-bold uppercase text-slate-400">{label}</p><p className={`mt-1 text-xl font-black ${color}`}>{value}</p></div>)}
       </div>
 
       <div className="flex gap-1 overflow-x-auto rounded-2xl border border-slate-200 bg-white p-1.5 dark:border-neutral-800 dark:bg-neutral-900">
-        {views.filter(item => !item.admin || isAdmin || (item.id === 'movements' && canSeeCosts)).map(item => <button key={item.id} onClick={() => setView(item.id)} className={`flex min-w-max items-center gap-2 rounded-xl px-3 py-2 text-xs font-bold ${view === item.id ? 'bg-emerald-600 text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-neutral-800'}`}><item.icon className="h-4 w-4" />{item.label}</button>)}
+        {views.filter(item => canSeeStockQuantity && (!item.admin || isAdmin || (item.id === 'movements' && canSeeCosts)) || item.id === 'catalog').map(item => <button key={item.id} onClick={() => setView(item.id)} className={`flex min-w-max items-center gap-2 rounded-xl px-3 py-2 text-xs font-bold ${view === item.id ? 'bg-emerald-600 text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-neutral-800'}`}><item.icon className="h-4 w-4" />{item.label}</button>)}
       </div>
 
       {view === 'catalog' && <section className="rounded-3xl border border-slate-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900/60">
@@ -264,12 +273,12 @@ export const ProductManager: React.FC = () => {
             <button disabled={bulkDeleting} onClick={() => setCategoryOpen(true)} className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-bold disabled:opacity-50 dark:border-neutral-700"><Tags className="h-4 w-4" /> Nueva categoría</button>
           </div>}
         </div>
-        <div className="overflow-x-auto"><table className="w-full min-w-[800px] text-left text-xs"><thead className="border-b border-slate-200 text-[10px] uppercase text-slate-400 dark:border-neutral-800"><tr>{isAdmin && <th className="w-10 p-3"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisibleProducts} disabled={!visibleProductIds.length || bulkDeleting} aria-label="Seleccionar todos los productos visibles" className="h-4 w-4 accent-emerald-600" /></th>}<th className="p-3">Producto</th><th className="p-3">SKU / código</th><th className="p-3">Precio</th>{canSeeCosts && <th className="p-3">Costo / margen</th>}<th className="p-3">Disponible</th><th className="p-3">Estado</th>{isAdmin && <th className="p-3" />}</tr></thead><tbody>
-          {filteredProducts.map(product => { const variant = variantsByProduct.get(product.id); const price = variant ? pricesByVariant.get(variant.id) : undefined; const margin = price?.salePrice ? ((price.salePrice - price.cost) / price.salePrice) * 100 : 0; const deleting = deletingProductId === product.id || bulkDeleting; const selected = selectedProductIds.includes(product.id); return <tr key={product.id} className={`border-b border-slate-100 dark:border-neutral-800/70 ${selected ? 'bg-emerald-50/70 dark:bg-emerald-950/20' : ''}`}>{isAdmin && <td className="p-3"><input type="checkbox" checked={selected} onChange={() => toggleProductSelection(product.id)} disabled={deleting} aria-label={`Seleccionar ${product.name}`} className="h-4 w-4 accent-emerald-600" /></td>}<td className="p-3"><p className="font-extrabold text-slate-900 dark:text-white">{product.name}</p><p className="text-[10px] text-slate-400">{product.categoryName} · {product.brand || 'Sin marca'}</p></td><td className="p-3 font-mono"><p>{variant?.sku || product.sku}</p><p className="text-[10px] text-slate-400">{variant?.barcode || 'Sin código'}</p></td><td className="p-3 font-extrabold">{money(price?.promoPrice || price?.salePrice || 0)}</td>{canSeeCosts && <td className="p-3"><p>{money(price?.cost || 0)}</p><p className={margin < 20 ? 'text-amber-600' : 'text-emerald-600'}>{margin.toFixed(1)}%</p></td>}<td className="p-3 font-black">{variant ? availableStock(variant.id) : 0}</td><td className="p-3"><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${product.status === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{product.status === 'active' ? 'Activo' : product.status}</span></td>{isAdmin && <td className="p-3"><div className="flex gap-1"><button disabled={deleting} onClick={() => openProduct(product)} className="rounded-lg p-2 hover:bg-slate-100 disabled:opacity-40 dark:hover:bg-neutral-800" title="Editar"><Pencil className="h-4 w-4" /></button><button disabled={deleting} onClick={() => window.confirm(`¿Descontinuar ${product.name}?`) && deactivateProduct(product.id)} className="rounded-lg p-2 text-amber-600 hover:bg-amber-50 disabled:opacity-40" title="Descontinuar"><X className="h-4 w-4" /></button><button disabled={deleting} onClick={() => void confirmDeleteProduct(product)} className="rounded-lg p-2 text-rose-600 hover:bg-rose-50 disabled:cursor-wait disabled:opacity-40" title="Eliminar definitivamente" aria-label={`Eliminar definitivamente ${product.name}`}><Trash2 className="h-4 w-4" /></button></div></td>}</tr>; })}
+        <div className="overflow-x-auto"><table className="w-full min-w-[800px] text-left text-xs"><thead className="border-b border-slate-200 text-[10px] uppercase text-slate-400 dark:border-neutral-800"><tr>{isAdmin && <th className="w-10 p-3"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisibleProducts} disabled={!visibleProductIds.length || bulkDeleting} aria-label="Seleccionar todos los productos visibles" className="h-4 w-4 accent-emerald-600" /></th>}<th className="p-3">Producto</th><th className="p-3">SKU / código</th><th className="p-3">Precio</th>{canSeeCosts && <th className="p-3">Costo / margen</th>}<th className="p-3">{canSeeStockQuantity ? 'Disponible' : 'Disponibilidad'}</th><th className="p-3">Estado</th>{isAdmin && <th className="p-3" />}</tr></thead><tbody>
+          {filteredProducts.map(product => { const variant = variantsByProduct.get(product.id); const price = variant ? pricesByVariant.get(variant.id) : undefined; const margin = price?.salePrice ? ((price.salePrice - price.cost) / price.salePrice) * 100 : 0; const deleting = deletingProductId === product.id || bulkDeleting; const selected = selectedProductIds.includes(product.id); const stock = variant ? availableStock(variant.id) : 0; return <tr key={product.id} className={`border-b border-slate-100 dark:border-neutral-800/70 ${selected ? 'bg-emerald-50/70 dark:bg-emerald-950/20' : ''}`}>{isAdmin && <td className="p-3"><input type="checkbox" checked={selected} onChange={() => toggleProductSelection(product.id)} disabled={deleting} aria-label={`Seleccionar ${product.name}`} className="h-4 w-4 accent-emerald-600" /></td>}<td className="p-3"><p className="font-extrabold text-slate-900 dark:text-white">{product.name}</p><p className="text-[10px] text-slate-400">{product.categoryName} · {product.brand || 'Sin marca'}</p></td><td className="p-3 font-mono"><p>{variant?.sku || product.sku}</p><p className="text-[10px] text-slate-400">{variant?.barcode || 'Sin código'}</p></td><td className="p-3 font-extrabold">{money(price?.promoPrice || price?.salePrice || 0)}</td>{canSeeCosts && <td className="p-3"><p>{money(price?.cost || 0)}</p><p className={margin < 20 ? 'text-amber-600' : 'text-emerald-600'}>{margin.toFixed(1)}%</p></td>}<td className="p-3 font-black">{canSeeStockQuantity ? stock : <span className={stock > 0 ? 'text-emerald-600' : 'text-slate-400'}>{stock > 0 ? 'Disponible' : 'Sin existencias'}</span>}</td><td className="p-3"><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${product.status === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{product.status === 'active' ? 'Activo' : product.status}</span></td>{isAdmin && <td className="p-3"><div className="flex gap-1"><button disabled={deleting} onClick={() => openProduct(product)} className="rounded-lg p-2 hover:bg-slate-100 disabled:opacity-40 dark:hover:bg-neutral-800" title="Editar"><Pencil className="h-4 w-4" /></button><button disabled={deleting} onClick={() => window.confirm(`¿Descontinuar ${product.name}?`) && deactivateProduct(product.id)} className="rounded-lg p-2 text-amber-600 hover:bg-amber-50 disabled:opacity-40" title="Descontinuar"><X className="h-4 w-4" /></button><button disabled={deleting} onClick={() => void confirmDeleteProduct(product)} className="rounded-lg p-2 text-rose-600 hover:bg-rose-50 disabled:cursor-wait disabled:opacity-40" title="Eliminar definitivamente" aria-label={`Eliminar definitivamente ${product.name}`}><Trash2 className="h-4 w-4" /></button></div></td>}</tr>; })}
         </tbody></table>{filteredProducts.length === 0 && <p className="p-10 text-center text-sm text-slate-400">No hay productos para mostrar.</p>}</div>
       </section>}
 
-      {view === 'inventory' && <InventoryView inventory={inventory} isAdmin={isAdmin} onAdjust={() => setStockOpen(true)} />}
+      {view === 'inventory' && canSeeStockQuantity && <InventoryView inventory={inventory} isAdmin={isAdmin} onAdjust={() => setStockOpen(true)} />}
       {view === 'movements' && <MovementView movements={inventoryMovements} />}
 
       {productOpen && <Modal title={editingProductId ? 'Editar producto' : 'Nuevo producto'} onClose={() => setProductOpen(false)}><form onSubmit={submitProduct} className="grid grid-cols-1 gap-3 sm:grid-cols-2">

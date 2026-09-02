@@ -24,6 +24,7 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
     currentUser, users, stores, addDailySale, updateDailySale, products,
     productVariants, productPrices, inventory,
   } = useApp();
+  const canSeeStockQuantity = currentUser.role !== 'vendedor';
   const selectableStores = stores.filter(store => store.active && (
     currentUser.role === 'admin'
     || currentUser.role === 'contador'
@@ -274,7 +275,7 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
                   const alreadyAdded = cartLines.some(line => line.variantId === variant.id);
                   return (
                     <option key={variant.id} value={variant.id} disabled={stock <= 0 || alreadyAdded}>
-                      {product?.name} · {variant.name} · SKU {variant.sku} · ${Number(price?.salePrice || 0).toLocaleString('es-CO')} · {stock > 0 ? `${stock} disponibles` : 'Sin existencias'}{alreadyAdded ? ' · Ya agregado' : ''}
+                      {product?.name} · {variant.name} · SKU {variant.sku} · ${Number(price?.salePrice || 0).toLocaleString('es-CO')} · {stock > 0 ? (canSeeStockQuantity ? `${stock} disponibles` : 'Disponible') : 'Sin existencias'}{alreadyAdded ? ' · Ya agregado' : ''}
                     </option>
                   );
                 })}
@@ -302,8 +303,8 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
                       <select value={line.variantId} onChange={e => setCartLines(prev => prev.map((item, lineIndex) => lineIndex === index ? { ...item, variantId: e.target.value, quantity: 1 } : item))} className="min-w-0 rounded-lg border border-slate-200 bg-slate-50 px-2 py-2 text-[11px] dark:border-neutral-700 dark:bg-neutral-950">
                         {catalogVariants.filter(variant => (variant.id === line.variantId || availableFor(variant.id) > 0) && (variant.id === line.variantId || !cartLines.some(item => item.variantId === variant.id))).map(variant => <option key={variant.id} value={variant.id}>{products.find(product => product.id === variant.productId)?.name} · {variant.sku}</option>)}
                       </select>
-                      <input aria-label="Cantidad" title={`Disponible: ${stock}`} type="number" min="1" max={stock} value={line.quantity} onChange={e => setCartLines(prev => prev.map((item, lineIndex) => lineIndex === index ? { ...item, quantity: Math.max(1, Number(e.target.value)) } : item))} className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-2 text-[11px] dark:border-neutral-700 dark:bg-neutral-950" />
-                      <div className="rounded-lg bg-slate-50 px-2 py-1 text-right dark:bg-neutral-950"><p className="text-[9px] text-slate-400">{stock} disp.</p><p className="font-black">{new Intl.NumberFormat('es-CO').format((price?.salePrice || 0) * line.quantity)}</p></div>
+                      <input aria-label="Cantidad a vender" title={canSeeStockQuantity ? `Disponible: ${stock}` : 'Cantidad a vender'} type="number" min="1" max={canSeeStockQuantity ? stock : undefined} value={line.quantity} onChange={e => setCartLines(prev => prev.map((item, lineIndex) => lineIndex === index ? { ...item, quantity: Math.max(1, Number(e.target.value)) } : item))} className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-2 text-[11px] dark:border-neutral-700 dark:bg-neutral-950" />
+                      <div className="rounded-lg bg-slate-50 px-2 py-1 text-right dark:bg-neutral-950">{canSeeStockQuantity && <p className="text-[9px] text-slate-400">{stock} disp.</p>}<p className="font-black">{new Intl.NumberFormat('es-CO').format((price?.salePrice || 0) * line.quantity)}</p></div>
                       <button type="button" onClick={() => setCartLines(prev => prev.filter((_, lineIndex) => lineIndex !== index))} className="flex items-center justify-center rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/20"><Trash2 className="h-4 w-4" /></button>
                       <label className="col-span-4 flex items-center justify-end gap-2 text-[10px] text-slate-500">Descuento de esta línea (COP)<input type="number" min="0" max={(price?.salePrice || 0) * line.quantity} value={line.discountAmount} onChange={e => setCartLines(prev => prev.map((item, lineIndex) => lineIndex === index ? { ...item, discountAmount: Number(e.target.value) } : item))} className="w-28 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-right dark:border-neutral-700 dark:bg-neutral-950" /></label>
                     </div>
