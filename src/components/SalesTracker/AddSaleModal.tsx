@@ -75,10 +75,18 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
     return Math.max(0, (current?.quantity || 0) - (current?.reservedQuantity || 0) + restoredFromEdit);
   };
 
-  const activeVariants = productVariants.filter(variant => {
+  const catalogVariants = productVariants.filter(variant => {
     const product = products.find(item => item.id === variant.productId);
-    return variant.active && product?.status === 'active' && productPrices.some(price => price.variantId === variant.id) && availableFor(variant.id) > 0;
+    const hasPriceForStore = productPrices.some(price => (
+      price.variantId === variant.id && (price.storeId === storeId || !price.storeId)
+    ));
+    return variant.active && product?.status === 'active' && hasPriceForStore;
   });
+
+  const availableVariants = catalogVariants.filter(variant => (
+    availableFor(variant.id) > 0
+    && !cartLines.some(line => line.variantId === variant.id)
+  ));
 
   const cartItems: SaleItem[] = cartLines.flatMap(line => {
     const variant = productVariants.find(item => item.id === line.variantId);
@@ -96,9 +104,12 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
   const cartTax = cartItems.reduce((sum, item) => sum + item.taxAmount, 0);
   const cartTotal = cartSubtotal - cartDiscount + cartTax;
 
-  const addCartLine = () => {
-    const candidate = activeVariants.find(variant => !cartLines.some(line => line.variantId === variant.id));
-    if (candidate) setCartLines(prev => [...prev, { variantId: candidate.id, quantity: 1, discountAmount: 0 }]);
+  const addProductToCart = (variantId: string) => {
+    if (!variantId || cartLines.some(line => line.variantId === variantId)) return;
+    const candidate = catalogVariants.find(variant => variant.id === variantId);
+    if (candidate && availableFor(candidate.id) > 0) {
+      setCartLines(prev => [...prev, { variantId: candidate.id, quantity: 1, discountAmount: 0 }]);
+    }
   };
 
   if (!isOpen) return null;
@@ -231,16 +242,56 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
             </select>
           </div>
 
-          {productVariants.length > 0 && (
-            <div className="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-3 dark:border-emerald-900/50 dark:bg-emerald-950/10">
-              <div className="mb-3 flex items-center justify-between">
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-3 dark:border-emerald-900/50 dark:bg-emerald-950/10">
+              <div className="mb-3">
                 <label className="flex items-center gap-1.5 font-extrabold text-slate-800 dark:text-white">
                   <ShoppingCart className="h-4 w-4 text-emerald-600" /> Productos vendidos
                 </label>
-                <button type="button" onClick={addCartLine} disabled={activeVariants.length <= cartLines.length} className="flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-[10px] font-black text-white disabled:cursor-not-allowed disabled:opacity-40">
-                  <Plus className="h-3 w-3" /> Agregar producto
-                </button>
+                <p className="mt-1 text-[10px] text-slate-500 dark:text-neutral-400">
+                  Selecciona un producto del inventario para agregarlo a la venta.
+                </p>
               </div>
+
+              <select
+                value=""
+                onChange={event => addProductToCart(event.target.value)}
+                disabled={!storeId || availableVariants.length === 0}
+                aria-label="Seleccionar producto del inventario"
+                className="mb-3 w-full rounded-xl border border-emerald-200 bg-white px-3.5 py-2.5 font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-emerald-900/60 dark:bg-neutral-900 dark:text-white"
+              >
+                <option value="">
+                  {!storeId
+                    ? 'Primero selecciona una tienda'
+                    : availableVariants.length > 0
+                      ? 'Seleccionar producto...'
+                      : 'No hay más productos con existencias disponibles'}
+                </option>
+                {catalogVariants.map(variant => {
+                  const product = products.find(item => item.id === variant.productId);
+                  const price = productPrices.find(item => item.variantId === variant.id && item.storeId === storeId)
+                    || productPrices.find(item => item.variantId === variant.id && !item.storeId);
+                  const stock = availableFor(variant.id);
+                  const alreadyAdded = cartLines.some(line => line.variantId === variant.id);
+                  return (
+                    <option key={variant.id} value={variant.id} disabled={stock <= 0 || alreadyAdded}>
+                      {product?.name} · {variant.name} · SKU {variant.sku} · ${Number(price?.salePrice || 0).toLocaleString('es-CO')} · {stock > 0 ? `${stock} disponibles` : 'Sin existencias'}{alreadyAdded ? ' · Ya agregado' : ''}
+                    </option>
+                  );
+                })}
+              </select>
+
+              {products.length === 0 && (
+                <p className="mb-3 rounded-xl bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-700 dark:bg-amber-950/20 dark:text-amber-300">
+                  Aún no hay productos registrados. Agrégalos primero en Productos e inventario.
+                </p>
+              )}
+
+              {products.length > 0 && catalogVariants.length === 0 && (
+                <p className="mb-3 rounded-xl bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-700 dark:bg-amber-950/20 dark:text-amber-300">
+                  Los productos necesitan una variante activa y un precio configurado para esta tienda.
+                </p>
+              )}
+
               <div className="space-y-2">
                 {cartLines.map((line, index) => {
                   const stock = availableFor(line.variantId);
@@ -249,7 +300,7 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
                   return (
                     <div key={`${line.variantId}-${index}`} className="grid grid-cols-[minmax(0,1fr)_70px_95px_32px] gap-2 rounded-xl border border-slate-200 bg-white p-2 dark:border-neutral-800 dark:bg-neutral-900">
                       <select value={line.variantId} onChange={e => setCartLines(prev => prev.map((item, lineIndex) => lineIndex === index ? { ...item, variantId: e.target.value, quantity: 1 } : item))} className="min-w-0 rounded-lg border border-slate-200 bg-slate-50 px-2 py-2 text-[11px] dark:border-neutral-700 dark:bg-neutral-950">
-                        {activeVariants.filter(variant => variant.id === line.variantId || !cartLines.some(item => item.variantId === variant.id)).map(variant => <option key={variant.id} value={variant.id}>{products.find(product => product.id === variant.productId)?.name} · {variant.sku}</option>)}
+                        {catalogVariants.filter(variant => (variant.id === line.variantId || availableFor(variant.id) > 0) && (variant.id === line.variantId || !cartLines.some(item => item.variantId === variant.id))).map(variant => <option key={variant.id} value={variant.id}>{products.find(product => product.id === variant.productId)?.name} · {variant.sku}</option>)}
                       </select>
                       <input aria-label="Cantidad" title={`Disponible: ${stock}`} type="number" min="1" max={stock} value={line.quantity} onChange={e => setCartLines(prev => prev.map((item, lineIndex) => lineIndex === index ? { ...item, quantity: Math.max(1, Number(e.target.value)) } : item))} className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-2 text-[11px] dark:border-neutral-700 dark:bg-neutral-950" />
                       <div className="rounded-lg bg-slate-50 px-2 py-1 text-right dark:bg-neutral-950"><p className="text-[9px] text-slate-400">{stock} disp.</p><p className="font-black">{new Intl.NumberFormat('es-CO').format((price?.salePrice || 0) * line.quantity)}</p></div>
@@ -262,7 +313,6 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
               </div>
               {cartLines.length > 0 && <div className="mt-3 grid grid-cols-4 gap-2 border-t border-emerald-200 pt-3 text-right dark:border-emerald-900/50"><div><p className="text-[9px] uppercase text-slate-400">Subtotal</p><p className="font-bold">${cartSubtotal.toLocaleString('es-CO')}</p></div><div><p className="text-[9px] uppercase text-slate-400">Descuento</p><p className="font-bold text-rose-500">-${cartDiscount.toLocaleString('es-CO')}</p></div><div><p className="text-[9px] uppercase text-slate-400">IVA</p><p className="font-bold">${cartTax.toLocaleString('es-CO')}</p></div><div><p className="text-[9px] uppercase text-emerald-600">Total</p><p className="font-black text-emerald-700 dark:text-emerald-400">${cartTotal.toLocaleString('es-CO')}</p></div></div>}
             </div>
-          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
