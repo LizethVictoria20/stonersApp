@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { getDepartmentLabel } from '../utils/formatters';
+import { ActiveTab } from '../lib/routes';
 
 interface SidebarProps {
   onOpenAIModal: () => void;
@@ -28,7 +29,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenAIModal }) => {
   const isAdmin = currentUser.role === 'admin';
 
   interface NavItem {
-    id: string;
+    id: ActiveTab;
     label: string;
     description: string;
     section: 'Principal' | 'Operación' | 'Administración';
@@ -144,7 +145,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenAIModal }) => {
                     return (
                       <button
                         key={item.id}
-                        onClick={() => setActiveTab(item.id as any)}
+                        onClick={() => setActiveTab(item.id)}
                         aria-current={isActive ? 'page' : undefined}
                         className={`group relative flex min-h-[3.75rem] w-full items-center gap-3 overflow-hidden rounded-2xl border px-2.5 py-2 text-left transition-all duration-200 ${
                           isActive

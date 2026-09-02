@@ -46,6 +46,21 @@ El módulo **Productos e Inventario** incluye catálogo, categorías, precios, e
 - **Administrador:** crea y modifica productos y stock.
 
 Los datos generales de cada producto se almacenan en la tabla normalizada `public.products`. Las variantes, precios, existencias y movimientos permanecen como colecciones separadas para conservar una estructura ordenada y evitar duplicar información.
+
+## Rutas de los módulos
+
+- `/dashboard`: resumen general.
+- `/ventas`: ventas y presupuestos.
+- `/tiendas`: sedes y tiendas.
+- `/productos`: productos e inventario.
+- `/tareas`: controlador de tareas.
+- `/manual-sops`: procedimientos operativos.
+- `/indicadores`: metas e indicadores.
+- `/equipo`: usuarios y permisos.
+- `/reportes`: reportes y exportación.
+- `/base-de-datos`: configuración de Supabase.
+
+La navegación utiliza el historial del navegador y el despliegue de GitHub Pages genera `404.html` como respaldo para admitir la carga directa de estas rutas.
 - **Contador:** consulta costos, valor del inventario, ventas y utilidad.
 - **Vendedor:** consulta precio y disponibilidad; registra ventas únicamente en sus tiendas asignadas.
 

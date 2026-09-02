@@ -21,36 +21,45 @@ import { LoginPage } from './components/LoginPage';
 import { GmailInboxModal } from './components/GmailInboxModal';
 import { AIOpsAssistantModal } from './components/AIOpsAssistantModal';
 import { Task, SOPProcedure } from './types';
+import { getCurrentRoute, getTabFromRoute, navigateToRoute } from './lib/routes';
 
 function MainAppContent() {
-  const { activeTab, currentUser, isAuthenticated } = useApp();
-  const basePath = import.meta.env.BASE_URL.replace(/\/$/, '');
-  const getCurrentRoute = () => {
-    const browserPath = window.location.pathname;
-    if (basePath && browserPath === basePath) return '/';
-    if (basePath && browserPath.startsWith(`${basePath}/`)) {
-      return browserPath.slice(basePath.length) || '/';
-    }
-    return browserPath;
-  };
+  const { activeTab, setActiveTab, currentUser, isAuthenticated } = useApp();
   const [pathname, setPathname] = useState(getCurrentRoute);
 
   useEffect(() => {
     const handlePopState = () => setPathname(getCurrentRoute());
     window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
-  }, [basePath]);
+    window.addEventListener('stoners-route-change', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      window.removeEventListener('stoners-route-change', handlePopState);
+    };
+  }, []);
 
-  const navigate = (path: string) => {
-    const targetPath = `${basePath}${path}` || '/';
-    window.history.pushState({}, '', targetPath);
-    setPathname(path);
+  const navigate = (path: string, replace = false) => {
+    navigateToRoute(path, { replace });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const isAdmin = currentUser.role === 'admin';
   const isAdminOnlyTab = activeTab === 'team' || activeTab === 'exports' || activeTab === 'supabase_cloud' || activeTab === 'stores';
   const currentTab = (isAdminOnlyTab && !isAdmin) ? 'sales' : activeTab;
+
+  useEffect(() => {
+    if (!isAuthenticated || pathname === '/login') return;
+    const requestedTab = getTabFromRoute(pathname);
+    if (!requestedTab) {
+      navigate('/dashboard', true);
+      return;
+    }
+    const adminOnly = requestedTab === 'team' || requestedTab === 'exports' || requestedTab === 'supabase_cloud' || requestedTab === 'stores';
+    if (adminOnly && !isAdmin) {
+      setActiveTab('sales', { replace: true });
+      return;
+    }
+    if (requestedTab !== activeTab) setActiveTab(requestedTab, { replace: true });
+  }, [activeTab, isAdmin, isAuthenticated, pathname, setActiveTab]);
 
   // Modals state
   const [isGmailOpen, setIsGmailOpen] = useState(false);
@@ -69,7 +78,8 @@ function MainAppContent() {
   };
 
   if (pathname === '/login' || pathname === '/login/' || !isAuthenticated) {
-    return <LoginPage onLoginSuccess={() => navigate('/')} />;
+    const returnRoute = pathname !== '/login' && getTabFromRoute(pathname) ? pathname : '/dashboard';
+    return <LoginPage onLoginSuccess={() => navigate(returnRoute, true)} />;
   }
 
   return (

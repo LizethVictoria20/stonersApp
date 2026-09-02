@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useCallback, useContext, useState, useEffect } from 'react';
 import {
   User, Task, SOPProcedure, KPIMetric, Goal, NotificationItem, ActivityLog, Department,
   SalesBudget, DailySale, Store, ProductCategory, Product, ProductVariant, ProductPrice,
@@ -14,6 +14,7 @@ import {
 } from '../lib/googleAuth';
 import { User as FirebaseUser } from 'firebase/auth';
 import { apiRequest, apiUrl, clearApiSessionToken, getApiSessionToken, setApiSessionToken } from '../lib/api';
+import { ActiveTab, getTabFromCurrentRoute, navigateToTab } from '../lib/routes';
 
 type PersistedCollection =
   | 'users' | 'tasks' | 'sops' | 'goals' | 'notifications' | 'activity_logs'
@@ -94,8 +95,8 @@ interface AppContextType {
   activityLogs: ActivityLog[];
   theme: 'dark' | 'light';
   toggleTheme: () => void;
-  activeTab: 'dashboard' | 'tasks' | 'sops' | 'kpis' | 'team' | 'exports' | 'supabase_cloud' | 'sales' | 'stores' | 'products';
-  setActiveTab: (tab: 'dashboard' | 'tasks' | 'sops' | 'kpis' | 'team' | 'exports' | 'supabase_cloud' | 'sales' | 'stores' | 'products') => void;
+  activeTab: ActiveTab;
+  setActiveTab: (tab: ActiveTab, options?: { replace?: boolean }) => void;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
   selectedDeptFilter: Department | 'all';
@@ -214,13 +215,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return (localStorage.getItem('stoners_theme') as 'dark' | 'light') || 'light';
   });
 
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'tasks' | 'sops' | 'kpis' | 'team' | 'exports' | 'supabase_cloud' | 'sales' | 'stores' | 'products'>('dashboard');
+  const [activeTab, setActiveTabState] = useState<ActiveTab>(() => getTabFromCurrentRoute() || 'dashboard');
+  const setActiveTab = useCallback((tab: ActiveTab, options?: { replace?: boolean }) => {
+    setActiveTabState(tab);
+    navigateToTab(tab, options);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDeptFilter, setSelectedDeptFilter] = useState<Department | 'all'>('all');
   const [isSyncing, setIsSyncing] = useState(true);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [hasRegisteredUsers, setHasRegisteredUsers] = useState(users.length > 0);
   const [apiSessionToken, setApiSessionTokenState] = useState(getApiSessionToken);
+
+  useEffect(() => {
+    const syncTabFromBrowser = () => {
+      const tab = getTabFromCurrentRoute();
+      if (tab) setActiveTabState(tab);
+    };
+    window.addEventListener('popstate', syncTabFromBrowser);
+    return () => window.removeEventListener('popstate', syncTabFromBrowser);
+  }, []);
 
   useEffect(() => {
     const expireSession = () => {
