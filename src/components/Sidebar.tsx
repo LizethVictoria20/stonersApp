@@ -66,7 +66,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenAIModal }) => {
     {
       id: 'products',
       label: 'Productos e Inventario',
-      description: isAdmin ? 'Catálogo, stock y lotes' : 'Catálogo y disponibilidad',
+      description: isAdmin ? 'Catálogo, stock y movimientos' : 'Catálogo y disponibilidad',
       section: 'Operación',
       icon: PackageSearch,
       badge: 'Stock',

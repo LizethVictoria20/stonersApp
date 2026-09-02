@@ -14,10 +14,8 @@ export const COLLECTIONS = [
   'products',
   'product_variants',
   'product_prices',
-  'suppliers',
   'inventory',
   'inventory_movements',
-  'product_batches',
 ] as const;
 
 export type CollectionName = (typeof COLLECTIONS)[number];

@@ -231,17 +231,6 @@ export interface ProductPrice {
   updatedAt: string;
 }
 
-export interface Supplier {
-  id: string;
-  name: string;
-  taxId?: string;
-  contactName?: string;
-  email?: string;
-  phone?: string;
-  address?: string;
-  active: boolean;
-}
-
 export interface InventoryItem {
   id: string;
   storeId: string;
@@ -278,23 +267,6 @@ export interface InventoryMovement {
   userId: string;
   userName: string;
   timestamp: string;
-}
-
-export interface ProductBatch {
-  id: string;
-  productId: string;
-  variantId: string;
-  supplierId?: string;
-  supplierName?: string;
-  storeId: string;
-  lotNumber: string;
-  manufactureDate?: string;
-  expirationDate?: string;
-  quantityReceived: number;
-  remainingQuantity: number;
-  invoiceReference?: string;
-  regulatoryDocument?: string;
-  createdAt: string;
 }
 
 export interface SaleItem {

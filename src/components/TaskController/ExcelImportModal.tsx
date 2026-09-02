@@ -114,7 +114,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({ isOpen, onCl
             </div>
             <div>
               <h3 className="text-base font-extrabold text-slate-900 dark:text-white">Importar Tareas desde Excel / CSV</h3>
-              <p className="text-xs text-slate-500 dark:text-neutral-400">Cargue lotes masivos de tareas para diferentes departamentos</p>
+              <p className="text-xs text-slate-500 dark:text-neutral-400">Cargue tareas masivas para diferentes departamentos</p>
             </div>
           </div>
           <button 

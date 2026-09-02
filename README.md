@@ -41,9 +41,9 @@ La migración copia los usuarios existentes, conserva roles, tiendas y hashes de
 
 ## Catálogo, inventario y ventas
 
-El módulo **Productos e Inventario** incluye catálogo, categorías, precios, existencias por tienda, proveedores, lotes y movimientos. Los permisos son:
+El módulo **Productos e Inventario** incluye catálogo, categorías, precios, existencias por tienda y movimientos. Los permisos son:
 
-- **Administrador:** crea y modifica productos, proveedores, lotes y stock.
+- **Administrador:** crea y modifica productos y stock.
 - **Contador:** consulta costos, valor del inventario, ventas y utilidad.
 - **Vendedor:** consulta precio y disponibilidad; registra ventas únicamente en sus tiendas asignadas.
 

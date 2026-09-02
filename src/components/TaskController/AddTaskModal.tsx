@@ -112,7 +112,7 @@ export const AddTaskModal: React.FC<AddTaskModalProps> = ({ isOpen, onClose }) =
               required
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="Ej: Sanitización de Mesas de Floración Lote 04"
+              placeholder="Ej: Verificación del inventario de la tienda"
               className="w-full rounded-xl border border-slate-300 dark:border-neutral-800 bg-slate-50 dark:bg-neutral-900 px-3.5 py-2 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-neutral-500 focus:border-emerald-500 focus:outline-none"
             />
           </div>

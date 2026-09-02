@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import {
   User, Task, SOPProcedure, KPIMetric, Goal, NotificationItem, ActivityLog, Department,
   SalesBudget, DailySale, Store, ProductCategory, Product, ProductVariant, ProductPrice,
-  Supplier, InventoryItem, InventoryMovement, ProductBatch, InventoryMovementType,
+  InventoryItem, InventoryMovement, InventoryMovementType,
 } from '../types';
 import { INITIAL_KPIS } from '../data/initialData';
 import { 
@@ -18,8 +18,7 @@ import { apiRequest, apiUrl, clearApiSessionToken, getApiSessionToken, setApiSes
 type PersistedCollection =
   | 'users' | 'tasks' | 'sops' | 'goals' | 'notifications' | 'activity_logs'
   | 'sales_budgets' | 'daily_sales' | 'stores' | 'product_categories' | 'products'
-  | 'product_variants' | 'product_prices' | 'suppliers' | 'inventory'
-  | 'inventory_movements' | 'product_batches';
+  | 'product_variants' | 'product_prices' | 'inventory' | 'inventory_movements';
 
 interface BootstrapPayload {
   currentUser: User | null;
@@ -36,10 +35,8 @@ interface BootstrapPayload {
   products: Product[];
   product_variants: ProductVariant[];
   product_prices: ProductPrice[];
-  suppliers: Supplier[];
   inventory: InventoryItem[];
   inventory_movements: InventoryMovement[];
-  product_batches: ProductBatch[];
 }
 
 interface AuthResponse {
@@ -82,16 +79,12 @@ interface AppContextType {
   products: Product[];
   productVariants: ProductVariant[];
   productPrices: ProductPrice[];
-  suppliers: Supplier[];
   inventory: InventoryItem[];
   inventoryMovements: InventoryMovement[];
-  productBatches: ProductBatch[];
   saveCategory: (category: ProductCategory) => void;
   saveProductBundle: (product: Product, variant: ProductVariant, price: ProductPrice) => void;
   deactivateProduct: (productId: string) => void;
-  saveSupplier: (supplier: Supplier) => void;
   adjustInventory: (inventory: InventoryItem, quantityDelta: number, reason: string, type?: InventoryMovementType) => void;
-  receiveBatch: (batch: ProductBatch, inventory: InventoryItem) => void;
   notifications: NotificationItem[];
   unreadNotificationCount: number;
   markAsRead: (notifId: string) => void;
@@ -210,10 +203,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [products, setProducts] = useState<Product[]>([]);
   const [productVariants, setProductVariants] = useState<ProductVariant[]>([]);
   const [productPrices, setProductPrices] = useState<ProductPrice[]>([]);
-  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [inventoryMovements, setInventoryMovements] = useState<InventoryMovement[]>([]);
-  const [productBatches, setProductBatches] = useState<ProductBatch[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
 
@@ -269,10 +260,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setProducts(data.products || []);
         setProductVariants(data.product_variants || []);
         setProductPrices(data.product_prices || []);
-        setSuppliers(data.suppliers || []);
         setInventory(data.inventory || []);
         setInventoryMovements(data.inventory_movements || []);
-        setProductBatches(data.product_batches || []);
         setIsSyncing(true);
       })
       .catch((error) => {
@@ -410,10 +399,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setProducts([]);
       setProductVariants([]);
       setProductPrices([]);
-      setSuppliers([]);
       setInventory([]);
       setInventoryMovements([]);
-      setProductBatches([]);
     } catch (err) {
       console.error('Error al cerrar sesión de Google:', err);
     } finally {
@@ -486,10 +473,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             if (collection === 'products') setProducts(upsert);
             if (collection === 'product_variants') setProductVariants(upsert);
             if (collection === 'product_prices') setProductPrices(upsert);
-            if (collection === 'suppliers') setSuppliers(upsert);
             if (collection === 'inventory') setInventory(upsert);
             if (collection === 'inventory_movements') setInventoryMovements(upsert);
-            if (collection === 'product_batches') setProductBatches(upsert);
           } else if (data.type === 'DATA_DELETED') {
             const { collection, id } = data.payload;
             if (collection === 'users') setUsers(prev => prev.filter(item => item.id !== id));
@@ -505,10 +490,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             if (collection === 'products') setProducts(prev => prev.filter(item => item.id !== id));
             if (collection === 'product_variants') setProductVariants(prev => prev.filter(item => item.id !== id));
             if (collection === 'product_prices') setProductPrices(prev => prev.filter(item => item.id !== id));
-            if (collection === 'suppliers') setSuppliers(prev => prev.filter(item => item.id !== id));
             if (collection === 'inventory') setInventory(prev => prev.filter(item => item.id !== id));
             if (collection === 'inventory_movements') setInventoryMovements(prev => prev.filter(item => item.id !== id));
-            if (collection === 'product_batches') setProductBatches(prev => prev.filter(item => item.id !== id));
           }
         } catch (e) {
           console.warn('SSE Parse error', e);
@@ -857,12 +840,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     logActivity('Producto descontinuado', `Descontinuó ${product.name} sin borrar su historial`, 'admin');
   };
 
-  const saveSupplier = (supplier: Supplier) => {
-    setSuppliers(prev => [supplier, ...prev.filter(item => item.id !== supplier.id)]);
-    persistRecord('suppliers', supplier);
-    logActivity('Proveedor guardado', `Guardó el proveedor ${supplier.name}`, 'admin');
-  };
-
   const adjustInventory = (
     inventoryItem: InventoryItem,
     quantityDelta: number,
@@ -876,17 +853,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setInventoryMovements(prev => [result.movement, ...prev.filter(item => item.id !== result.movement.id)]);
       logActivity('Ajuste de inventario', `${result.inventory.productName}: ${quantityDelta >= 0 ? '+' : ''}${quantityDelta} en ${result.inventory.storeName}`, 'admin');
     }).catch(error => window.alert(error instanceof Error ? error.message : 'No se pudo ajustar el inventario.'));
-  };
-
-  const receiveBatch = (batch: ProductBatch, inventoryItem: InventoryItem) => {
-    void apiRequest<{ batch: ProductBatch; inventory: InventoryItem; movement: InventoryMovement }>('/api/inventory/batches', {
-      method: 'POST', body: JSON.stringify({ batch, inventory: inventoryItem }),
-    }).then(result => {
-      setProductBatches(prev => [result.batch, ...prev.filter(item => item.id !== result.batch.id)]);
-      setInventory(prev => [result.inventory, ...prev.filter(item => item.id !== result.inventory.id)]);
-      setInventoryMovements(prev => [result.movement, ...prev.filter(item => item.id !== result.movement.id)]);
-      logActivity('Lote recibido', `Recibió el lote ${result.batch.lotNumber} con ${result.batch.quantityReceived} unidades`, 'admin');
-    }).catch(error => window.alert(error instanceof Error ? error.message : 'No se pudo recibir el lote.'));
   };
 
   const markAsRead = (notifId: string) => {
@@ -945,16 +911,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         products,
         productVariants,
         productPrices,
-        suppliers,
         inventory,
         inventoryMovements,
-        productBatches,
         saveCategory,
         saveProductBundle,
         deactivateProduct,
-        saveSupplier,
         adjustInventory,
-        receiveBatch,
         notifications,
         unreadNotificationCount,
         markAsRead,

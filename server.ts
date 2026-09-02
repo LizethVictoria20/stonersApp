@@ -9,7 +9,6 @@ import {
   InventoryMovement,
   InventoryMovementType,
   Product,
-  ProductBatch,
   ProductPrice,
   ProductVariant,
   SaleItem,
@@ -157,7 +156,7 @@ function broadcastSyncEvent(eventType: string, payload: any) {
   sseClients.forEach((role, client) => {
     let safePayload = payload;
     if (role === 'vendedor' && eventType === 'DATA_UPSERTED') {
-      if (['suppliers', 'inventory_movements', 'product_batches'].includes(payload.collection)) return;
+      if (payload.collection === 'inventory_movements') return;
       if (payload.collection === 'product_prices') {
         const { cost: _cost, ...record } = payload.record;
         safePayload = { ...payload, record };
@@ -299,7 +298,7 @@ async function startServer() {
           if (collection === 'product_prices') {
             records = (records as ProductPrice[]).map(({ cost: _cost, ...price }) => price);
           }
-          if (collection === 'suppliers' || collection === 'inventory_movements' || collection === 'product_batches') {
+          if (collection === 'inventory_movements') {
             records = [];
           }
           if (collection === 'daily_sales') {
@@ -315,7 +314,7 @@ async function startServer() {
 
   const productWriteCollections: CollectionName[] = [
     'product_categories', 'products', 'product_variants', 'product_prices',
-    'suppliers', 'inventory', 'inventory_movements', 'product_batches', 'daily_sales',
+    'inventory', 'inventory_movements', 'daily_sales',
   ];
 
   const requireAdminForProductWrite = async (collection: CollectionName, res: express.Response) => {
@@ -443,53 +442,6 @@ async function startServer() {
     broadcastSyncEvent('DATA_UPSERTED', { collection: 'inventory', record });
     broadcastSyncEvent('DATA_UPSERTED', { collection: 'inventory_movements', record: movement });
     res.status(201).json({ inventory: record, movement });
-  }));
-
-  app.post('/api/inventory/batches', asyncRoute(async (req, res) => {
-    const actor = await getAdminActor(res);
-    if (!actor) return;
-    const batch = req.body.batch as ProductBatch;
-    const requested = req.body.inventory as InventoryItem;
-    if (!batch?.lotNumber?.trim() || !batch.variantId || !batch.storeId || Number(batch.quantityReceived) <= 0) {
-      return res.status(400).json({ error: 'Lote, producto, tienda y cantidad recibida son obligatorios.' });
-    }
-    const duplicate = (await listRecords<ProductBatch>('product_batches')).find(item => item.id !== batch.id && item.productId === batch.productId && item.lotNumber.toLowerCase() === batch.lotNumber.toLowerCase());
-    if (duplicate) return res.status(409).json({ error: 'Este número de lote ya existe para el producto.' });
-    const [store, variant, product, existingItems] = await Promise.all([
-      findRecord<Store>('stores', batch.storeId),
-      findRecord<ProductVariant>('product_variants', batch.variantId),
-      findRecord<Product>('products', batch.productId),
-      listRecords<InventoryItem>('inventory'),
-    ]);
-    if (!store?.active || !variant?.active || !product || variant.productId !== product.id) {
-      return res.status(400).json({ error: 'La tienda o el producto del lote no son válidos.' });
-    }
-    const existing = existingItems.find(item => item.storeId === store.id && item.variantId === variant.id);
-    const previousQuantity = existing?.quantity || 0;
-    const now = new Date().toISOString();
-    const record: InventoryItem = {
-      ...requested, ...existing, id: existing?.id || `${store.id}:${variant.id}`,
-      storeId: store.id, storeName: store.name, productId: product.id, variantId: variant.id,
-      sku: variant.sku, productName: product.name, quantity: previousQuantity + Number(batch.quantityReceived),
-      reservedQuantity: existing?.reservedQuantity || 0, updatedAt: now,
-    };
-    const savedBatch: ProductBatch = { ...batch, productId: product.id, variantId: variant.id, storeId: store.id, quantityReceived: Number(batch.quantityReceived), remainingQuantity: Number(batch.quantityReceived), createdAt: batch.createdAt || now };
-    const movement: InventoryMovement = {
-      id: `mov-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`, inventoryId: record.id,
-      storeId: store.id, storeName: store.name, productId: product.id, variantId: variant.id,
-      sku: variant.sku, productName: product.name, type: 'entry', quantity: savedBatch.quantityReceived,
-      previousQuantity, newQuantity: record.quantity, reason: `Recepción de lote ${savedBatch.lotNumber}`,
-      referenceId: savedBatch.id, userId: actor.id, userName: actor.name, timestamp: now,
-    };
-    await applyRecordTransaction([
-      { collection: 'product_batches', record: savedBatch },
-      { collection: 'inventory', record },
-      { collection: 'inventory_movements', record: movement },
-    ]);
-    broadcastSyncEvent('DATA_UPSERTED', { collection: 'product_batches', record: savedBatch });
-    broadcastSyncEvent('DATA_UPSERTED', { collection: 'inventory', record });
-    broadcastSyncEvent('DATA_UPSERTED', { collection: 'inventory_movements', record: movement });
-    res.status(201).json({ batch: savedBatch, inventory: record, movement });
   }));
 
   const prepareSale = async (body: any, session: SessionPayload, existingSale?: DailySale) => {
@@ -948,7 +900,7 @@ Instrucciones específicas para responder:
             steps: [
               { stepNumber: 1, title: "Inspección de Bioseguridad", description: "Verificar equipos de protección.", isCritical: true },
               { stepNumber: 2, title: "Registro en Bitácora", description: "Anotar hora y personal encargado.", isCritical: false },
-              { stepNumber: 3, title: "Verificación de Lote", description: "Confirmar código de barras y empaque.", isCritical: true }
+              { stepNumber: 3, title: "Verificación del producto", description: "Confirmar código de barras y empaque.", isCritical: true }
             ]
           } : null
         });
