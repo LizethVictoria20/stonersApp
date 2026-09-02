@@ -98,14 +98,51 @@ function userToRow(record) {
     store_ids: record.storeIds || []
   };
 }
+function productFromRow(row) {
+  return {
+    id: row.id,
+    sku: row.sku,
+    name: row.name,
+    description: row.description || "",
+    categoryId: row.category_id || "",
+    categoryName: row.category_name || "Sin categor\xEDa",
+    brand: row.brand || "",
+    unit: row.unit || "unidad",
+    imageUrl: row.image_url || void 0,
+    status: row.status || "active",
+    taxRate: Number(row.tax_rate || 0),
+    regulatoryRegistration: row.regulatory_registration || void 0,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+function productToRow(record) {
+  return {
+    id: record.id,
+    sku: record.sku.trim(),
+    name: record.name.trim(),
+    description: record.description || "",
+    category_id: record.categoryId || "",
+    category_name: record.categoryName || "Sin categor\xEDa",
+    brand: record.brand || "",
+    unit: record.unit || "unidad",
+    image_url: record.imageUrl || null,
+    status: record.status || "active",
+    tax_rate: Number(record.taxRate || 0),
+    regulatory_registration: record.regulatoryRegistration || null,
+    created_at: record.createdAt || (/* @__PURE__ */ new Date()).toISOString(),
+    updated_at: record.updatedAt || (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
 async function checkDatabase() {
   const supabase = getClient();
   if (!supabase) return { configured: false, connected: false };
-  const [{ error: recordsError }, { error: usersError }] = await Promise.all([
+  const [{ error: recordsError }, { error: usersError }, { error: productsError }] = await Promise.all([
     supabase.from("app_records").select("entity_id").limit(1),
-    supabase.from("users").select("id").limit(1)
+    supabase.from("users").select("id").limit(1),
+    supabase.from("products").select("id").limit(1)
   ]);
-  const error = recordsError || usersError;
+  const error = recordsError || usersError || productsError;
   return error ? { configured: true, connected: false, error: error.message } : { configured: true, connected: true };
 }
 async function listRecords(collection) {
@@ -114,6 +151,11 @@ async function listRecords(collection) {
     const { data: data2, error: error2 } = await supabase.from("users").select("*").order("created_at", { ascending: false });
     if (error2) throw new Error(`No se pudo leer users: ${error2.message}`);
     return (data2 || []).map(userFromRow);
+  }
+  if (collection === "products") {
+    const { data: data2, error: error2 } = await supabase.from("products").select("*").order("created_at", { ascending: false });
+    if (error2) throw new Error(`No se pudo leer products: ${error2.message}`);
+    return (data2 || []).map(productFromRow);
   }
   const { data, error } = await supabase.from("app_records").select("payload").eq("entity_type", collection).order("created_at", { ascending: false });
   if (error) throw new Error(`No se pudo leer ${collection}: ${error.message}`);
@@ -126,6 +168,15 @@ async function upsertRecord(collection, record) {
     if (!user.email?.trim()) throw new Error("No se puede guardar un usuario sin correo electr\xF3nico.");
     const { error: error2 } = await supabase.from("users").upsert(userToRow(user), { onConflict: "id" });
     if (error2) throw new Error(`No se pudo guardar users: ${error2.message}`);
+    return record;
+  }
+  if (collection === "products") {
+    const product = record;
+    if (!product.name?.trim() || !product.sku?.trim()) {
+      throw new Error("No se puede guardar un producto sin nombre y SKU.");
+    }
+    const { error: error2 } = await supabase.from("products").upsert(productToRow(product), { onConflict: "id" });
+    if (error2) throw new Error(`No se pudo guardar products: ${error2.message}`);
     return record;
   }
   const { error } = await supabase.from("app_records").upsert(
@@ -144,6 +195,11 @@ async function deleteRecord(collection, id) {
   if (collection === "users") {
     const { error: error2 } = await supabase.from("users").delete().eq("id", id);
     if (error2) throw new Error(`No se pudo eliminar users: ${error2.message}`);
+    return;
+  }
+  if (collection === "products") {
+    const { error: error2 } = await supabase.from("products").delete().eq("id", id);
+    if (error2) throw new Error(`No se pudo eliminar products: ${error2.message}`);
     return;
   }
   const { error } = await supabase.from("app_records").delete().eq("entity_type", collection).eq("entity_id", id);
@@ -475,10 +531,66 @@ async function startServer() {
       { collection: "product_variants", record: variant },
       { collection: "product_prices", record: price }
     ]);
-    broadcastSyncEvent("DATA_UPSERTED", { collection: "products", record: product });
-    broadcastSyncEvent("DATA_UPSERTED", { collection: "product_variants", record: variant });
-    broadcastSyncEvent("DATA_UPSERTED", { collection: "product_prices", record: price });
-    res.status(201).json({ product, variant, price });
+    const [savedProduct, savedVariant, savedPrice] = await Promise.all([
+      findRecord("products", product.id),
+      findRecord("product_variants", variant.id),
+      findRecord("product_prices", price.id)
+    ]);
+    if (!savedProduct || !savedVariant || !savedPrice) {
+      throw new Error("Supabase no confirm\xF3 el guardado completo del producto.");
+    }
+    broadcastSyncEvent("DATA_UPSERTED", { collection: "products", record: savedProduct });
+    broadcastSyncEvent("DATA_UPSERTED", { collection: "product_variants", record: savedVariant });
+    broadcastSyncEvent("DATA_UPSERTED", { collection: "product_prices", record: savedPrice });
+    res.status(201).json({ product: savedProduct, variant: savedVariant, price: savedPrice });
+  }));
+  const deleteProductsCompletely = async (requestedIds) => {
+    const productIds = new Set(requestedIds);
+    const [products, variants, prices, inventoryItems, movements] = await Promise.all([
+      listRecords("products"),
+      listRecords("product_variants"),
+      listRecords("product_prices"),
+      listRecords("inventory"),
+      listRecords("inventory_movements")
+    ]);
+    const selectedProducts = products.filter((item) => productIds.has(item.id));
+    const selectedProductIds = new Set(selectedProducts.map((item) => item.id));
+    const productVariants = variants.filter((item) => selectedProductIds.has(item.productId));
+    const variantIds = new Set(productVariants.map((item) => item.id));
+    const productPrices = prices.filter((item) => selectedProductIds.has(item.productId) || variantIds.has(item.variantId));
+    const productInventory = inventoryItems.filter((item) => selectedProductIds.has(item.productId) || variantIds.has(item.variantId));
+    const productMovements = movements.filter((item) => selectedProductIds.has(item.productId) || variantIds.has(item.variantId));
+    const deletes = [
+      ...productMovements.map((item) => ({ collection: "inventory_movements", id: item.id })),
+      ...productInventory.map((item) => ({ collection: "inventory", id: item.id })),
+      ...productPrices.map((item) => ({ collection: "product_prices", id: item.id })),
+      ...productVariants.map((item) => ({ collection: "product_variants", id: item.id })),
+      ...selectedProducts.map((item) => ({ collection: "products", id: item.id }))
+    ];
+    await applyRecordTransaction([], deletes);
+    deletes.forEach(({ collection, id }) => broadcastSyncEvent("DATA_DELETED", { collection, id }));
+    return {
+      productIds: selectedProducts.map((item) => item.id),
+      variantIds: productVariants.map((item) => item.id),
+      priceIds: productPrices.map((item) => item.id),
+      inventoryIds: productInventory.map((item) => item.id),
+      movementIds: productMovements.map((item) => item.id)
+    };
+  };
+  app.post("/api/products/bulk-delete", asyncRoute(async (req, res) => {
+    if (!await getAdminActor(res)) return;
+    const productIds = Array.isArray(req.body.productIds) ? [...new Set(req.body.productIds.map((id) => String(id).trim()).filter((id) => Boolean(id)))] : [];
+    if (!productIds.length) return res.status(400).json({ error: "Selecciona al menos un producto." });
+    if (productIds.length > 500) return res.status(400).json({ error: "Solo puedes eliminar hasta 500 productos por operaci\xF3n." });
+    const result = await deleteProductsCompletely(productIds);
+    if (!result.productIds.length) return res.status(404).json({ error: "No se encontraron los productos seleccionados." });
+    res.json(result);
+  }));
+  app.delete("/api/products/:id", asyncRoute(async (req, res) => {
+    if (!await getAdminActor(res)) return;
+    const result = await deleteProductsCompletely([req.params.id]);
+    if (!result.productIds.length) return res.status(404).json({ error: "Producto no encontrado." });
+    res.json(result);
   }));
   app.post("/api/inventory/adjust", asyncRoute(async (req, res) => {
     const actor = await getAdminActor(res);

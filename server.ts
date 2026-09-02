@@ -392,10 +392,72 @@ async function startServer() {
       { collection: 'product_variants', record: variant },
       { collection: 'product_prices', record: price },
     ]);
-    broadcastSyncEvent('DATA_UPSERTED', { collection: 'products', record: product });
-    broadcastSyncEvent('DATA_UPSERTED', { collection: 'product_variants', record: variant });
-    broadcastSyncEvent('DATA_UPSERTED', { collection: 'product_prices', record: price });
-    res.status(201).json({ product, variant, price });
+    const [savedProduct, savedVariant, savedPrice] = await Promise.all([
+      findRecord<Product>('products', product.id),
+      findRecord<ProductVariant>('product_variants', variant.id),
+      findRecord<ProductPrice>('product_prices', price.id),
+    ]);
+    if (!savedProduct || !savedVariant || !savedPrice) {
+      throw new Error('Supabase no confirmó el guardado completo del producto.');
+    }
+    broadcastSyncEvent('DATA_UPSERTED', { collection: 'products', record: savedProduct });
+    broadcastSyncEvent('DATA_UPSERTED', { collection: 'product_variants', record: savedVariant });
+    broadcastSyncEvent('DATA_UPSERTED', { collection: 'product_prices', record: savedPrice });
+    res.status(201).json({ product: savedProduct, variant: savedVariant, price: savedPrice });
+  }));
+
+  const deleteProductsCompletely = async (requestedIds: string[]) => {
+    const productIds = new Set(requestedIds);
+    const [products, variants, prices, inventoryItems, movements] = await Promise.all([
+      listRecords<Product>('products'),
+      listRecords<ProductVariant>('product_variants'),
+      listRecords<ProductPrice>('product_prices'),
+      listRecords<InventoryItem>('inventory'),
+      listRecords<InventoryMovement>('inventory_movements'),
+    ]);
+    const selectedProducts = products.filter(item => productIds.has(item.id));
+    const selectedProductIds = new Set(selectedProducts.map(item => item.id));
+    const productVariants = variants.filter(item => selectedProductIds.has(item.productId));
+    const variantIds = new Set(productVariants.map(item => item.id));
+    const productPrices = prices.filter(item => selectedProductIds.has(item.productId) || variantIds.has(item.variantId));
+    const productInventory = inventoryItems.filter(item => selectedProductIds.has(item.productId) || variantIds.has(item.variantId));
+    const productMovements = movements.filter(item => selectedProductIds.has(item.productId) || variantIds.has(item.variantId));
+    const deletes: Array<{ collection: CollectionName; id: string }> = [
+      ...productMovements.map(item => ({ collection: 'inventory_movements' as const, id: item.id })),
+      ...productInventory.map(item => ({ collection: 'inventory' as const, id: item.id })),
+      ...productPrices.map(item => ({ collection: 'product_prices' as const, id: item.id })),
+      ...productVariants.map(item => ({ collection: 'product_variants' as const, id: item.id })),
+      ...selectedProducts.map(item => ({ collection: 'products' as const, id: item.id })),
+    ];
+
+    await applyRecordTransaction([], deletes);
+    deletes.forEach(({ collection, id }) => broadcastSyncEvent('DATA_DELETED', { collection, id }));
+    return {
+      productIds: selectedProducts.map(item => item.id),
+      variantIds: productVariants.map(item => item.id),
+      priceIds: productPrices.map(item => item.id),
+      inventoryIds: productInventory.map(item => item.id),
+      movementIds: productMovements.map(item => item.id),
+    };
+  };
+
+  app.post('/api/products/bulk-delete', asyncRoute(async (req, res) => {
+    if (!(await getAdminActor(res))) return;
+    const productIds: string[] = Array.isArray(req.body.productIds)
+      ? [...new Set<string>(req.body.productIds.map((id: unknown) => String(id).trim()).filter((id: string) => Boolean(id)))]
+      : [];
+    if (!productIds.length) return res.status(400).json({ error: 'Selecciona al menos un producto.' });
+    if (productIds.length > 500) return res.status(400).json({ error: 'Solo puedes eliminar hasta 500 productos por operación.' });
+    const result = await deleteProductsCompletely(productIds);
+    if (!result.productIds.length) return res.status(404).json({ error: 'No se encontraron los productos seleccionados.' });
+    res.json(result);
+  }));
+
+  app.delete('/api/products/:id', asyncRoute(async (req, res) => {
+    if (!(await getAdminActor(res))) return;
+    const result = await deleteProductsCompletely([req.params.id]);
+    if (!result.productIds.length) return res.status(404).json({ error: 'Producto no encontrado.' });
+    res.json(result);
   }));
 
   app.post('/api/inventory/adjust', asyncRoute(async (req, res) => {

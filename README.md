@@ -44,6 +44,8 @@ La migración copia los usuarios existentes, conserva roles, tiendas y hashes de
 El módulo **Productos e Inventario** incluye catálogo, categorías, precios, existencias por tienda y movimientos. Los permisos son:
 
 - **Administrador:** crea y modifica productos y stock.
+
+Los datos generales de cada producto se almacenan en la tabla normalizada `public.products`. Las variantes, precios, existencias y movimientos permanecen como colecciones separadas para conservar una estructura ordenada y evitar duplicar información.
 - **Contador:** consulta costos, valor del inventario, ventas y utilidad.
 - **Vendedor:** consulta precio y disponibilidad; registra ventas únicamente en sus tiendas asignadas.
 

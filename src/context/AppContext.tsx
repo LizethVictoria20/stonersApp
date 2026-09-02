@@ -81,9 +81,11 @@ interface AppContextType {
   productPrices: ProductPrice[];
   inventory: InventoryItem[];
   inventoryMovements: InventoryMovement[];
-  saveCategory: (category: ProductCategory) => void;
-  saveProductBundle: (product: Product, variant: ProductVariant, price: ProductPrice) => void;
+  saveCategory: (category: ProductCategory) => Promise<void>;
+  saveProductBundle: (product: Product, variant: ProductVariant, price: ProductPrice) => Promise<void>;
   deactivateProduct: (productId: string) => void;
+  deleteProduct: (productId: string) => Promise<void>;
+  deleteProducts: (productIds: string[]) => Promise<number>;
   adjustInventory: (inventory: InventoryItem, quantityDelta: number, reason: string, type?: InventoryMovementType) => void;
   notifications: NotificationItem[];
   unreadNotificationCount: number;
@@ -808,21 +810,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     logActivity('Asignación de Vendedores', `Actualizó vendedores asignados a ${targetStore.name} (${sellerIds.length} vendedores)`, 'admin');
   };
 
-  const saveCategory = (category: ProductCategory) => {
+  const saveCategory = async (category: ProductCategory) => {
+    await apiRequest(`/api/data/product_categories/${encodeURIComponent(category.id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(category),
+    });
     setProductCategories(prev => [category, ...prev.filter(item => item.id !== category.id)]);
-    persistRecord('product_categories', category);
     logActivity('Categoría guardada', `Guardó la categoría de productos ${category.name}`, 'admin');
   };
 
-  const saveProductBundle = (product: Product, variant: ProductVariant, price: ProductPrice) => {
-    void apiRequest<{ product: Product; variant: ProductVariant; price: ProductPrice }>('/api/products/bundle', {
+  const saveProductBundle = async (product: Product, variant: ProductVariant, price: ProductPrice) => {
+    const result = await apiRequest<{ product: Product; variant: ProductVariant; price: ProductPrice }>('/api/products/bundle', {
       method: 'POST', body: JSON.stringify({ product, variant, price }),
-    }).then(result => {
-      setProducts(prev => [result.product, ...prev.filter(item => item.id !== result.product.id)]);
-      setProductVariants(prev => [result.variant, ...prev.filter(item => item.id !== result.variant.id)]);
-      setProductPrices(prev => [result.price, ...prev.filter(item => item.id !== result.price.id)]);
-      logActivity('Producto guardado', `Guardó ${result.product.name} (${result.variant.sku}) en el catálogo`, 'admin');
-    }).catch(error => window.alert(error instanceof Error ? error.message : 'No se pudo guardar el producto.'));
+    });
+    setProducts(prev => [result.product, ...prev.filter(item => item.id !== result.product.id)]);
+    setProductVariants(prev => [result.variant, ...prev.filter(item => item.id !== result.variant.id)]);
+    setProductPrices(prev => [result.price, ...prev.filter(item => item.id !== result.price.id)]);
+    logActivity('Producto guardado', `Guardó ${result.product.name} (${result.variant.sku}) en el catálogo`, 'admin');
   };
 
   const deactivateProduct = (productId: string) => {
@@ -838,6 +842,44 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }));
     persistRecord('products', updated);
     logActivity('Producto descontinuado', `Descontinuó ${product.name} sin borrar su historial`, 'admin');
+  };
+
+  const deleteProducts = async (productIds: string[]) => {
+    const uniqueIds = [...new Set(productIds)];
+    const selectedProducts = products.filter(item => uniqueIds.includes(item.id));
+    if (!selectedProducts.length) return 0;
+    const result = await apiRequest<{
+      productIds: string[];
+      variantIds: string[];
+      priceIds: string[];
+      inventoryIds: string[];
+      movementIds: string[];
+    }>('/api/products/bulk-delete', {
+      method: 'POST',
+      body: JSON.stringify({ productIds: uniqueIds }),
+    });
+
+    const deletedProductIds = new Set(result.productIds);
+    const variantIds = new Set(result.variantIds);
+    const priceIds = new Set(result.priceIds);
+    const inventoryIds = new Set(result.inventoryIds);
+    const movementIds = new Set(result.movementIds);
+    setProducts(prev => prev.filter(item => !deletedProductIds.has(item.id)));
+    setProductVariants(prev => prev.filter(item => !variantIds.has(item.id)));
+    setProductPrices(prev => prev.filter(item => !priceIds.has(item.id)));
+    setInventory(prev => prev.filter(item => !inventoryIds.has(item.id)));
+    setInventoryMovements(prev => prev.filter(item => !movementIds.has(item.id)));
+    const names = selectedProducts.filter(item => deletedProductIds.has(item.id)).map(item => item.name);
+    logActivity(
+      names.length === 1 ? 'Producto eliminado' : 'Productos eliminados',
+      `Eliminó definitivamente ${names.join(', ')} del catálogo y del inventario`,
+      'admin',
+    );
+    return result.productIds.length;
+  };
+
+  const deleteProduct = async (productId: string) => {
+    await deleteProducts([productId]);
   };
 
   const adjustInventory = (
@@ -916,6 +958,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         saveCategory,
         saveProductBundle,
         deactivateProduct,
+        deleteProduct,
+        deleteProducts,
         adjustInventory,
         notifications,
         unreadNotificationCount,

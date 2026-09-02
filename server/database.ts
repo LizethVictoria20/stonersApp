@@ -35,6 +35,23 @@ type UserDocument = {
   storeIds?: string[];
 };
 
+type ProductDocument = {
+  id: string;
+  sku: string;
+  name: string;
+  description?: string;
+  categoryId?: string;
+  categoryName?: string;
+  brand?: string;
+  unit?: string;
+  imageUrl?: string;
+  status?: string;
+  taxRate?: number;
+  regulatoryRegistration?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 let client: SupabaseClient | null | undefined;
 
 function getClient(): SupabaseClient | null {
@@ -98,15 +115,54 @@ function userToRow(record: UserDocument) {
   };
 }
 
+function productFromRow(row: any): ProductDocument {
+  return {
+    id: row.id,
+    sku: row.sku,
+    name: row.name,
+    description: row.description || '',
+    categoryId: row.category_id || '',
+    categoryName: row.category_name || 'Sin categoría',
+    brand: row.brand || '',
+    unit: row.unit || 'unidad',
+    imageUrl: row.image_url || undefined,
+    status: row.status || 'active',
+    taxRate: Number(row.tax_rate || 0),
+    regulatoryRegistration: row.regulatory_registration || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function productToRow(record: ProductDocument) {
+  return {
+    id: record.id,
+    sku: record.sku.trim(),
+    name: record.name.trim(),
+    description: record.description || '',
+    category_id: record.categoryId || '',
+    category_name: record.categoryName || 'Sin categoría',
+    brand: record.brand || '',
+    unit: record.unit || 'unidad',
+    image_url: record.imageUrl || null,
+    status: record.status || 'active',
+    tax_rate: Number(record.taxRate || 0),
+    regulatory_registration: record.regulatoryRegistration || null,
+    created_at: record.createdAt || new Date().toISOString(),
+    updated_at: record.updatedAt || new Date().toISOString(),
+  };
+}
+
 export async function checkDatabase(): Promise<{ configured: boolean; connected: boolean; error?: string }> {
   const supabase = getClient();
   if (!supabase) return { configured: false, connected: false };
 
-  const [{ error: recordsError }, { error: usersError }] = await Promise.all([
+  const [{ error: recordsError }, { error: usersError }, { error: productsError }] = await Promise.all([
     supabase.from('app_records').select('entity_id').limit(1),
     supabase.from('users').select('id').limit(1),
+    supabase.from('products').select('id').limit(1),
   ]);
-  const error = recordsError || usersError;
+  const error = recordsError || usersError || productsError;
   return error
     ? { configured: true, connected: false, error: error.message }
     : { configured: true, connected: true };
@@ -122,6 +178,15 @@ export async function listRecords<T>(collection: CollectionName): Promise<T[]> {
       .order('created_at', { ascending: false });
     if (error) throw new Error(`No se pudo leer users: ${error.message}`);
     return (data || []).map(userFromRow) as T[];
+  }
+
+  if (collection === 'products') {
+    const { data, error } = await supabase
+      .from('products')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) throw new Error(`No se pudo leer products: ${error.message}`);
+    return (data || []).map(productFromRow) as T[];
   }
 
   const { data, error } = await supabase
@@ -145,6 +210,16 @@ export async function upsertRecord<T extends { id: string }>(collection: Collect
     return record;
   }
 
+  if (collection === 'products') {
+    const product = record as T & ProductDocument;
+    if (!product.name?.trim() || !product.sku?.trim()) {
+      throw new Error('No se puede guardar un producto sin nombre y SKU.');
+    }
+    const { error } = await supabase.from('products').upsert(productToRow(product), { onConflict: 'id' });
+    if (error) throw new Error(`No se pudo guardar products: ${error.message}`);
+    return record;
+  }
+
   const { error } = await supabase.from('app_records').upsert(
     {
       entity_type: collection,
@@ -164,6 +239,12 @@ export async function deleteRecord(collection: CollectionName, id: string): Prom
   if (collection === 'users') {
     const { error } = await supabase.from('users').delete().eq('id', id);
     if (error) throw new Error(`No se pudo eliminar users: ${error.message}`);
+    return;
+  }
+
+  if (collection === 'products') {
+    const { error } = await supabase.from('products').delete().eq('id', id);
+    if (error) throw new Error(`No se pudo eliminar products: ${error.message}`);
     return;
   }
 

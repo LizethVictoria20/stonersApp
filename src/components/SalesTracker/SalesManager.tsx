@@ -191,9 +191,6 @@ export const SalesManager: React.FC<SalesManagerProps> = ({ onOpenAIModal }) => 
             <h2 className="text-xl font-extrabold text-slate-900 dark:text-white tracking-tight">
               Control de Presupuestos y Ventas Diarias
             </h2>
-            <span className="rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-xs font-bold text-emerald-700 dark:text-emerald-400 border border-emerald-500/30">
-              Ventas POS & WP
-            </span>
           </div>
           <p className="text-xs text-slate-500 dark:text-neutral-400 mt-1">
             {isAdmin 
