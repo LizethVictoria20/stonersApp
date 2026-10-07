@@ -51,7 +51,8 @@ interface AppContextType {
   users: User[];
   hasRegisteredUsers: boolean;
   isAuthenticated: boolean;
-  addUser: (user: Omit<User, 'id' | 'productivityScore' | 'tasksCompletedThisMonth' | 'lastActive'>) => void;
+  addUser: (user: Omit<User, 'id' | 'productivityScore' | 'tasksCompletedThisMonth' | 'lastActive'>) => Promise<User>;
+  updateUser: (id: string, updates: Partial<User>) => Promise<User>;
   tasks: Task[];
   addTask: (task: Omit<Task, 'id' | 'code' | 'createdDate' | 'actualHours' | 'notes'>) => void;
   updateTask: (taskId: string, updates: Partial<Task>) => void;
@@ -65,7 +66,7 @@ interface AppContextType {
   goals: Goal[];
   addGoal: (goal: Omit<Goal, 'id' | 'progressPercentage' | 'status'>) => void;
   salesBudgets: SalesBudget[];
-  addOrUpdateSalesBudget: (budget: Omit<SalesBudget, 'id'>) => void;
+  addOrUpdateSalesBudget: (budget: Omit<SalesBudget, 'id'>) => Promise<SalesBudget>;
   deleteSalesBudget: (id: string) => void;
   dailySales: DailySale[];
   addDailySale: (sale: Omit<DailySale, 'id' | 'timestamp'>) => void;
@@ -633,7 +634,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     logActivity('Importación Masiva', `Importó ${importedTasks.length} tareas desde Excel/CSV`, currentUser.department);
   };
 
-  const addUser = (userData: Omit<User, 'id' | 'productivityScore' | 'tasksCompletedThisMonth' | 'lastActive'>) => {
+  const addUser = async (userData: Omit<User, 'id' | 'productivityScore' | 'tasksCompletedThisMonth' | 'lastActive'>) => {
     const newUser: User = {
       ...userData,
       id: `usr-${Date.now()}`,
@@ -641,12 +642,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       tasksCompletedThisMonth: 0,
       lastActive: 'Nuevo ingreso'
     };
-    setUsers(prev => [...prev, newUser]);
-    void apiRequest<User>('/api/users', {
+    const saved = await apiRequest<User>('/api/users', {
       method: 'POST',
       body: JSON.stringify(newUser),
-    }).catch(error => reportPersistenceError('No se pudo guardar el usuario', error));
-    logActivity('Usuario Creado', `Registró al colaborador ${newUser.name} como ${newUser.role}`, newUser.department);
+    });
+    setUsers(prev => [...prev.filter(user => user.id !== saved.id), saved]);
+    logActivity('Usuario Creado', `Registró al colaborador ${saved.name} como ${saved.role}`, saved.department);
+    return saved;
+  };
+
+  const updateUser = async (id: string, updates: Partial<User>) => {
+    const existing = users.find(user => user.id === id);
+    if (!existing) throw new Error('El vendedor ya no existe.');
+    const updated = await apiRequest<User>(`/api/data/users/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ ...existing, ...updates, id }),
+    });
+    setUsers(previous => previous.map(user => user.id === id ? updated : user));
+    if (currentUser.id === id) setCurrentUser(updated);
+    logActivity('Perfil actualizado', `Actualizó los datos personales de ${updated.name}`, 'admin');
+    return updated;
   };
 
   const addSOP = (sopData: Omit<SOPProcedure, 'id' | 'code' | 'lastUpdated' | 'acknowledgedBy'>) => {
@@ -695,30 +710,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     persistRecord('goals', newGoal);
   };
 
-  const addOrUpdateSalesBudget = (budgetData: Omit<SalesBudget, 'id'>) => {
-    setSalesBudgets(prev => {
-      const existingIndex = prev.findIndex(b => b.sellerId === budgetData.sellerId && b.month === budgetData.month);
-      if (existingIndex >= 0) {
-        const updated = [...prev];
-        updated[existingIndex] = {
-          ...updated[existingIndex],
-          targetAmount: budgetData.targetAmount,
-          notes: budgetData.notes,
-          sellerName: budgetData.sellerName
-        };
-        persistRecord('sales_budgets', updated[existingIndex]);
-        return updated;
-      } else {
-        const newBudget: SalesBudget = {
-          ...budgetData,
-          id: `bg-${Date.now()}`
-        };
-        persistRecord('sales_budgets', newBudget);
-        return [newBudget, ...prev];
-      }
+  const addOrUpdateSalesBudget = async (budgetData: Omit<SalesBudget, 'id'>) => {
+    const existing = salesBudgets.find(budget => budget.sellerId === budgetData.sellerId && budget.month === budgetData.month);
+    const budget: SalesBudget = existing
+      ? { ...existing, ...budgetData }
+      : { ...budgetData, id: `bg-${Date.now()}` };
+    const saved = await apiRequest<SalesBudget>(`/api/data/sales_budgets/${encodeURIComponent(budget.id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(budget),
     });
-
+    setSalesBudgets(previous => [saved, ...previous.filter(item => item.id !== saved.id)]);
     logActivity('Presupuesto Asignado', `Asignó presupuesto mensual de ${budgetData.targetAmount.toLocaleString()} COP a ${budgetData.sellerName}`, 'admin');
+    return saved;
   };
 
   const deleteSalesBudget = (id: string) => {
@@ -940,6 +943,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         hasRegisteredUsers,
         isAuthenticated: Boolean(apiSessionToken && currentUser.id !== BOOTSTRAP_USER.id),
         addUser,
+        updateUser,
         tasks,
         addTask,
         updateTask,

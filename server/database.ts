@@ -31,6 +31,11 @@ type UserDocument = {
   tasksCompletedThisMonth?: number;
   lastActive?: string;
   phone?: string;
+  documentNumber?: string;
+  birthDate?: string;
+  address?: string;
+  city?: string;
+  hireDate?: string;
   pinHash?: string;
   storeIds?: string[];
 };
@@ -93,6 +98,11 @@ function userFromRow(row: any): UserDocument {
     tasksCompletedThisMonth: row.tasks_completed_this_month,
     lastActive: row.last_active,
     phone: row.phone || undefined,
+    documentNumber: row.document_number || undefined,
+    birthDate: row.birth_date || undefined,
+    address: row.address || undefined,
+    city: row.city || undefined,
+    hireDate: row.hire_date || undefined,
     pinHash: row.pin_hash || undefined,
     storeIds: Array.isArray(row.store_ids) ? row.store_ids : [],
   };
@@ -110,6 +120,11 @@ function userToRow(record: UserDocument) {
     tasks_completed_this_month: Number(record.tasksCompletedThisMonth ?? 0),
     last_active: record.lastActive || 'Ahora mismo',
     phone: record.phone || null,
+    document_number: record.documentNumber || null,
+    birth_date: record.birthDate || null,
+    address: record.address || null,
+    city: record.city || null,
+    hire_date: record.hireDate || null,
     pin_hash: record.pinHash || null,
     store_ids: record.storeIds || [],
   };

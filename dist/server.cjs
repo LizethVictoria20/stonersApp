@@ -78,6 +78,11 @@ function userFromRow(row) {
     tasksCompletedThisMonth: row.tasks_completed_this_month,
     lastActive: row.last_active,
     phone: row.phone || void 0,
+    documentNumber: row.document_number || void 0,
+    birthDate: row.birth_date || void 0,
+    address: row.address || void 0,
+    city: row.city || void 0,
+    hireDate: row.hire_date || void 0,
     pinHash: row.pin_hash || void 0,
     storeIds: Array.isArray(row.store_ids) ? row.store_ids : []
   };
@@ -94,6 +99,11 @@ function userToRow(record) {
     tasks_completed_this_month: Number(record.tasksCompletedThisMonth ?? 0),
     last_active: record.lastActive || "Ahora mismo",
     phone: record.phone || null,
+    document_number: record.documentNumber || null,
+    birth_date: record.birthDate || null,
+    address: record.address || null,
+    city: record.city || null,
+    hire_date: record.hireDate || null,
     pin_hash: record.pinHash || null,
     store_ids: record.storeIds || []
   };
@@ -487,6 +497,7 @@ async function startServer() {
       return res.status(404).json({ error: "Colecci\xF3n no encontrada" });
     }
     if (!await requireAdminForProductWrite(collection, res)) return;
+    if ((collection === "users" || collection === "sales_budgets") && !await getAdminActor(res)) return;
     let record = { ...req.body, id: req.params.id };
     if (collection === "users") {
       const existing = await findRecord("users", req.params.id);
@@ -508,6 +519,7 @@ async function startServer() {
       return res.status(404).json({ error: "Colecci\xF3n no encontrada" });
     }
     if (!await requireAdminForProductWrite(collection, res)) return;
+    if ((collection === "users" || collection === "sales_budgets") && !await getAdminActor(res)) return;
     await deleteRecord(collection, req.params.id);
     broadcastSyncEvent("DATA_DELETED", { collection, id: req.params.id });
     res.json({ success: true, id: req.params.id });
@@ -861,6 +873,7 @@ async function startServer() {
     res.json((await listRecords("users")).map(sanitizeUser));
   }));
   app.post("/api/users", asyncRoute(async (req, res) => {
+    if (!await getAdminActor(res)) return;
     const normalizedEmail = String(req.body.email || "empleado@stonerscolombia.com").toLowerCase();
     const existing = await findRecordByField("users", "email", normalizedEmail);
     if (existing) {
@@ -890,6 +903,11 @@ async function startServer() {
       tasksCompletedThisMonth: 0,
       lastActive: "Ahora mismo",
       phone: req.body.phone || "+57 300 000 0000",
+      documentNumber: req.body.documentNumber || void 0,
+      birthDate: req.body.birthDate || void 0,
+      address: req.body.address || void 0,
+      city: req.body.city || void 0,
+      hireDate: req.body.hireDate || void 0,
       pinHash: req.body.pinCode ? hashPin(String(req.body.pinCode)) : void 0,
       storeIds: req.body.storeIds || []
     };

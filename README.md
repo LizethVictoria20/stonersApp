@@ -39,6 +39,12 @@ supabase/migrations/20260818_create_users_table.sql
 
 La migración copia los usuarios existentes, conserva roles, tiendas y hashes de PIN, elimina únicamente los documentos de usuario ya migrados desde `app_records` y puede ejecutarse nuevamente de forma segura. Los usuarios autenticados con Google siguen utilizando Firebase como proveedor de identidad, pero su perfil operativo queda en `public.users`.
 
+Para habilitar documento, fecha de nacimiento, dirección, ciudad y fecha de ingreso en las fichas comerciales de vendedores, ejecuta también:
+
+```text
+supabase/migrations/20260902_extend_seller_profiles.sql
+```
+
 ## Catálogo, inventario y ventas
 
 El módulo **Productos e Inventario** incluye catálogo, categorías, precios, existencias por tienda y movimientos. Los permisos son:

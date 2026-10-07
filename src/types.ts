@@ -31,6 +31,11 @@ export interface User {
   tasksCompletedThisMonth: number;
   lastActive: string;
   phone?: string;
+  documentNumber?: string;
+  birthDate?: string;
+  address?: string;
+  city?: string;
+  hireDate?: string;
   pinCode?: string;
   storeIds?: string[]; // Tiendas asignadas al vendedor
 }

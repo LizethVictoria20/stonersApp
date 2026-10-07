@@ -343,6 +343,7 @@ async function startServer() {
       return res.status(404).json({ error: 'Colección no encontrada' });
     }
     if (!(await requireAdminForProductWrite(collection, res))) return;
+    if ((collection === 'users' || collection === 'sales_budgets') && !(await getAdminActor(res))) return;
     let record = { ...req.body, id: req.params.id };
     if (collection === 'users') {
       const existing = await findRecord<StoredUser>('users', req.params.id);
@@ -365,6 +366,7 @@ async function startServer() {
       return res.status(404).json({ error: 'Colección no encontrada' });
     }
     if (!(await requireAdminForProductWrite(collection, res))) return;
+    if ((collection === 'users' || collection === 'sales_budgets') && !(await getAdminActor(res))) return;
     await deleteRecord(collection, req.params.id);
     broadcastSyncEvent('DATA_DELETED', { collection, id: req.params.id });
     res.json({ success: true, id: req.params.id });
@@ -740,6 +742,7 @@ async function startServer() {
   }));
 
   app.post("/api/users", asyncRoute(async (req, res) => {
+    if (!(await getAdminActor(res))) return;
     const normalizedEmail = String(req.body.email || 'empleado@stonerscolombia.com').toLowerCase();
     const existing = await findRecordByField<StoredUser>('users', 'email', normalizedEmail);
     if (existing) {
@@ -770,6 +773,11 @@ async function startServer() {
       tasksCompletedThisMonth: 0,
       lastActive: "Ahora mismo",
       phone: req.body.phone || "+57 300 000 0000",
+      documentNumber: req.body.documentNumber || undefined,
+      birthDate: req.body.birthDate || undefined,
+      address: req.body.address || undefined,
+      city: req.body.city || undefined,
+      hireDate: req.body.hireDate || undefined,
       pinHash: req.body.pinCode ? hashPin(String(req.body.pinCode)) : undefined,
       storeIds: req.body.storeIds || [],
     };

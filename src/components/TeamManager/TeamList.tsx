@@ -1,13 +1,15 @@
 import React, { useState } from 'react';
-import { Users, Plus, Shield, Phone, Mail, Award, CheckCircle2, KeyRound } from 'lucide-react';
+import { Users, Plus, Shield, Phone, Mail, Award, CheckCircle2, KeyRound, TrendingUp } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { UserAvatar } from '../UserAvatar';
 import { User, UserRole, Department } from '../../types';
 import { getDepartmentLabel, getRoleLabel } from '../../utils/formatters';
+import { SellerProfileModal } from './SellerProfileModal';
 
 export const TeamList: React.FC = () => {
   const { users, addUser, currentUser } = useApp();
   const [showAddUserModal, setShowAddUserModal] = useState(false);
+  const [selectedSeller, setSelectedSeller] = useState<User | null>(null);
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -15,26 +17,49 @@ export const TeamList: React.FC = () => {
   const [department, setDepartment] = useState<Department>('sales');
   const [phone, setPhone] = useState('+57 300 123 4567');
   const [pinCode, setPinCode] = useState('');
+  const [documentNumber, setDocumentNumber] = useState('');
+  const [birthDate, setBirthDate] = useState('');
+  const [city, setCity] = useState('');
+  const [address, setAddress] = useState('');
+  const [hireDate, setHireDate] = useState('');
+  const [savingUser, setSavingUser] = useState(false);
 
-  const handleAddSubmit = (e: React.FormEvent) => {
+  const handleAddSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
     if (!/^\d{4}$/.test(pinCode)) return;
 
-    addUser({
-      name: name.trim(),
-      email: email.trim() || `${name.toLowerCase().replace(/\s+/g, '.')}@stonerscolombia.com`,
-      role,
-      department,
-      avatar: '',
-      phone,
-      pinCode
-    });
+    setSavingUser(true);
+    try {
+      await addUser({
+        name: name.trim(),
+        email: email.trim() || `${name.toLowerCase().replace(/\s+/g, '.')}@stonerscolombia.com`,
+        role,
+        department,
+        avatar: '',
+        phone,
+        documentNumber,
+        birthDate,
+        city,
+        address,
+        hireDate,
+        pinCode
+      });
 
-    setName('');
-    setEmail('');
-    setPinCode('');
-    setShowAddUserModal(false);
+      setName('');
+      setEmail('');
+      setPinCode('');
+      setDocumentNumber('');
+      setBirthDate('');
+      setCity('');
+      setAddress('');
+      setHireDate('');
+      setShowAddUserModal(false);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'No se pudo registrar el colaborador.');
+    } finally {
+      setSavingUser(false);
+    }
   };
 
   return (
@@ -123,6 +148,16 @@ export const TeamList: React.FC = () => {
               <span className="text-slate-500 dark:text-neutral-400">Eficiencia Score:</span>
               <span className="font-extrabold text-emerald-600 dark:text-emerald-400">{u.productivityScore} pts</span>
             </div>
+
+            {u.role === 'vendedor' && (
+              <button
+                onClick={() => setSelectedSeller(u)}
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-3 py-2.5 text-xs font-black text-white transition-colors hover:bg-emerald-500"
+              >
+                <TrendingUp className="h-4 w-4" />
+                Ver ficha comercial
+              </button>
+            )}
           </div>
         ))}
       </div>
@@ -130,7 +165,7 @@ export const TeamList: React.FC = () => {
       {/* Modal Add User */}
       {showAddUserModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 dark:bg-black/80 backdrop-blur-sm p-4 animate-in fade-in">
-          <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white dark:border-emerald-900/50 dark:bg-neutral-950 p-6 shadow-2xl space-y-4">
+          <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-3xl border border-slate-200 bg-white dark:border-emerald-900/50 dark:bg-neutral-950 p-6 shadow-2xl space-y-4">
             <h3 className="text-base font-extrabold text-slate-900 dark:text-white">Registrar Nuevo Colaborador</h3>
 
             <form onSubmit={handleAddSubmit} className="space-y-3 text-xs">
@@ -185,6 +220,29 @@ export const TeamList: React.FC = () => {
                 </div>
               </div>
 
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <div>
+                  <label className="block font-bold text-slate-700 dark:text-neutral-300 mb-1">Documento</label>
+                  <input value={documentNumber} onChange={(e) => setDocumentNumber(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 dark:border-neutral-800 dark:bg-neutral-900 px-3 py-2 text-slate-900 dark:text-white focus:border-emerald-500 focus:outline-none" />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 dark:text-neutral-300 mb-1">Fecha de nacimiento</label>
+                  <input type="date" value={birthDate} onChange={(e) => setBirthDate(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 dark:border-neutral-800 dark:bg-neutral-900 px-3 py-2 text-slate-900 dark:text-white focus:border-emerald-500 focus:outline-none" />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 dark:text-neutral-300 mb-1">Ciudad</label>
+                  <input value={city} onChange={(e) => setCity(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 dark:border-neutral-800 dark:bg-neutral-900 px-3 py-2 text-slate-900 dark:text-white focus:border-emerald-500 focus:outline-none" />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 dark:text-neutral-300 mb-1">Fecha de ingreso</label>
+                  <input type="date" value={hireDate} onChange={(e) => setHireDate(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 dark:border-neutral-800 dark:bg-neutral-900 px-3 py-2 text-slate-900 dark:text-white focus:border-emerald-500 focus:outline-none" />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block font-bold text-slate-700 dark:text-neutral-300 mb-1">Dirección</label>
+                  <input value={address} onChange={(e) => setAddress(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 dark:border-neutral-800 dark:bg-neutral-900 px-3 py-2 text-slate-900 dark:text-white focus:border-emerald-500 focus:outline-none" />
+                </div>
+              </div>
+
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="block font-bold text-slate-700 dark:text-neutral-300 mb-1">Teléfono Móvil</label>
@@ -220,14 +278,19 @@ export const TeamList: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="rounded-xl bg-emerald-600 px-4 py-2 font-bold text-white hover:bg-emerald-500"
+                  disabled={savingUser}
+                  className="rounded-xl bg-emerald-600 px-4 py-2 font-bold text-white hover:bg-emerald-500 disabled:cursor-wait disabled:opacity-60"
                 >
-                  Registrar
+                  {savingUser ? 'Guardando…' : 'Registrar'}
                 </button>
               </div>
             </form>
           </div>
         </div>
+      )}
+
+      {selectedSeller && (
+        <SellerProfileModal seller={users.find(user => user.id === selectedSeller.id) || selectedSeller} onClose={() => setSelectedSeller(null)} />
       )}
 
     </div>
